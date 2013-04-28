@@ -267,7 +267,7 @@ private:
         generateBishopMoves(pos, moves, nMoves, chance, curPos, kingPos);
     }
 
-	CUDA_CALLABLE_MEMBER __forceinline  static bool checkSlidingThreat(const BoardPosition *pos, uint32 curPos, uint32 offset, uint32 piece1, uint32 piece2)
+    CUDA_CALLABLE_MEMBER __forceinline  static bool checkSlidingThreat(const BoardPosition *pos, uint32 curPos, uint32 offset, uint32 piece1, uint32 piece2)
     {
         uint32 newPos = curPos;
 
@@ -293,7 +293,7 @@ private:
     }
 
     // checks if the position is under attack by a piece of 'color'
-	CUDA_CALLABLE_MEMBER static bool isThreatened(const BoardPosition *pos, const uint32 curPos, uint32 color)
+    CUDA_CALLABLE_MEMBER static bool isThreatened(const BoardPosition *pos, const uint32 curPos, uint32 color)
     {
         // check if threatened by pawns
         uint32 pieceToCheck = COLOR_PIECE(color, PAWN);
