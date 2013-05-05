@@ -72,7 +72,7 @@
 				PreprocessorDefinitions="WIN32;_DEBUG;_CONSOLE"
 				MinimalRebuild="true"
 				BasicRuntimeChecks="3"
-				RuntimeLibrary="3"
+				RuntimeLibrary="1"
 				UsePrecompiledHeader="0"
 				WarningLevel="3"
 				DebugInformationFormat="4"
@@ -90,7 +90,7 @@
 				Name="VCLinkerTool"
 				ExecutionBucket="11"
 				AdditionalDependencies="cudart.lib"
-				OutputFile="$(OutDir)/cdpSimplePrint.exe"
+				OutputFile="$(OutDir)/perft_gpu_debug.exe"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories="$(CUDA_PATH)/lib/$(PlatformName);../../common/lib/$(PlatformName);"
 				GenerateDebugInformation="true"
@@ -452,6 +452,10 @@
 			</File>
 			<File
 				RelativePath=".\MoveGenerator088.h"
+				>
+			</File>
+			<File
+				RelativePath=".\MoveGeneratorBitboard.h"
 				>
 			</File>
 			<File

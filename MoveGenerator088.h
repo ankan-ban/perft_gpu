@@ -1,9 +1,17 @@
 #include "chess.h"
 
-#ifdef __CUDACC__
-#define CUDA_CALLABLE_MEMBER __host__ __device__
+// a simple 0x88 move generater / perft tool
+
+#define TEST_GPU_PERFT 0
+
+#if TEST_GPU_PERFT == 1
+    #ifdef __CUDACC__
+    #define CUDA_CALLABLE_MEMBER __host__ __device__
+    #else
+    #define CUDA_CALLABLE_MEMBER
+    #endif
 #else
-#define CUDA_CALLABLE_MEMBER
+    #define CUDA_CALLABLE_MEMBER
 #endif
 
 class MoveGenerator
@@ -413,3 +421,243 @@ public:
     }
 
 };
+
+
+// routines to make a move on the board and to undo it
+
+__host__ __device__ void makeMove(BoardPosition *pos, Move move)
+{
+    uint8 piece = PIECE(pos->board[move.src]);
+    uint32 chance = pos->chance;
+
+    pos->board[move.dst] = pos->board[move.src];
+    pos->board[move.src] = EMPTY_SQUARE;
+
+    if (move.flags)
+    {
+        // special  moves
+
+        // 1. Castling: update the rook position too
+        if(move.flags == CASTLE_KING_SIDE)
+        {
+            if (chance == BLACK)
+            {
+                pos->board[0x77] = EMPTY_SQUARE; 
+                pos->board[0x75] = COLOR_PIECE(BLACK, ROOK);
+            }
+            else
+            {
+                pos->board[0x07] = EMPTY_SQUARE; 
+                pos->board[0x05] = COLOR_PIECE(WHITE, ROOK);
+            }
+                        
+        }
+        else if (move.flags == CASTLE_QUEEN_SIDE)
+        {
+            if (chance == BLACK)
+            {
+                pos->board[0x70] = EMPTY_SQUARE; 
+                pos->board[0x73] = COLOR_PIECE(BLACK, ROOK);
+            }
+            else
+            {
+                pos->board[0x00] = EMPTY_SQUARE; 
+                pos->board[0x03] = COLOR_PIECE(WHITE, ROOK);
+            }
+        }
+
+        // 2. en-passent: clear the captured piece
+        else if (move.flags == EN_PASSENT)
+        {
+            pos->board[INDEX088(RANK(move.src), pos->enPassent - 1)] = EMPTY_SQUARE;
+        }
+
+        // 3. promotion: update the pawn to promoted piece
+        else if (move.flags == PROMOTION_QUEEN)
+        {
+            pos->board[move.dst] = COLOR_PIECE(chance, QUEEN);
+        }
+        else if (move.flags == PROMOTION_ROOK)
+        {
+            pos->board[move.dst] = COLOR_PIECE(chance, ROOK);
+        }
+        else if (move.flags == PROMOTION_KNIGHT)
+        {
+            pos->board[move.dst] = COLOR_PIECE(chance, KNIGHT);
+        }
+        else if (move.flags == PROMOTION_BISHOP)
+        {
+            pos->board[move.dst] = COLOR_PIECE(chance, BISHOP);
+        }
+    }
+
+    // update game state variables
+    pos->enPassent = 0;
+
+    if (piece == KING)
+    {
+        if (chance == BLACK)
+        {
+            pos->blackCastle = 0;
+        }
+        else
+        {
+            pos->whiteCastle = 0;
+        }
+    }
+    else if (piece == ROOK)
+    {
+        if (chance == BLACK)
+        {
+            if (move.src == 0x77)
+                pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (move.src == 0x70)
+                pos->blackCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
+        else
+        {
+            if (move.src == 0x7)
+                pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (move.src == 0x0)
+                pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
+    }
+    else if ((piece == PAWN) && (abs(RANK(move.dst) - RANK(move.src)) == 2))
+    {
+        pos->enPassent = FILE(move.src) + 1;
+    }
+
+    // clear the appriopiate castle flag if a rook is captured
+    if (PIECE(move.capturedPiece) == ROOK)
+    {
+        if (chance == BLACK)
+        {
+            if (move.dst == 0x7)
+                pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (move.dst == 0x0)
+                pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
+        else
+        {
+            if (move.dst == 0x77)
+                pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (move.dst == 0x70)
+                pos->blackCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
+    }
+
+    // flip the chance
+    pos->chance = !chance;
+}
+
+__host__ __device__ void undoMove(BoardPosition *pos, Move move, uint8 bc, uint8 wc, uint8 enPassent)
+{
+    pos->board[move.src] = pos->board[move.dst];    
+    pos->board[move.dst] = move.capturedPiece;
+
+    pos->blackCastle = bc;
+    pos->whiteCastle = wc;
+    pos->enPassent = enPassent;
+    pos->chance = !pos->chance;
+}
+
+
+// recursive perft search
+__device__ __host__ uint64 perft(BoardPosition *pos, int depth)
+{
+    Move moves[MAX_MOVES];
+    uint64 childPerft = 0;
+
+    uint32 nMoves = MoveGenerator::generateMoves(pos, moves);
+    if (depth == 1)
+    {
+        return nMoves;
+    }
+
+    for (uint32 i = 0; i < nMoves; i++)
+    {
+        BoardPosition temp = *pos;
+        makeMove(&temp, moves[i]);
+        childPerft += perft(&temp, depth - 1);
+    }
+    return childPerft;
+}
+
+
+
+
+///////////////////------------------------------ GPU implementation ---------------------------------//
+#if TEST_GPU_PERFT == 1
+// perft search
+__global__ void perft_gpu(BoardPosition *position, uint64 *generatedMoves, int depth, uint32 nodeEstimate)
+{
+    // exctact one element of work
+    BoardPosition *pos = &(position[threadIdx.x]);
+    uint64 *moveCounter = &(generatedMoves[threadIdx.x]);
+    
+
+    // TODO: check if keeping this local variable is ok
+    Move moves[MAX_MOVES];  // huge structure in thread local memory
+    uint64 childPerft = 0;
+
+    uint32 nMoves = MoveGenerator::generateMoves(pos, moves);
+
+    if (depth == 1 || nMoves == 0)
+    {
+        *moveCounter = nMoves;
+        return;
+    }
+
+
+    if (nodeEstimate < 1000000)
+    {
+        cudaStream_t childStream;
+        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+
+        BoardPosition *childBoards;
+        uint64 *child_perfts;
+        int hr;
+        hr = cudaMalloc(&childBoards, sizeof(BoardPosition) * nMoves);
+        
+        //if (hr != 0)
+        //    printf("error in malloc at depth %d\n", depth);
+        hr = cudaMalloc(&child_perfts, sizeof(uint64) * nMoves);
+        //if (hr != 0)
+        //    printf("error in sedond malloc at depth %d\n", depth);
+         
+
+        for (uint32 i = 0; i < nMoves; i++)
+        {
+            childBoards[i] = *pos;
+            makeMove(&childBoards[i], moves[i]);
+            child_perfts[i] = 0;
+        }
+
+        nodeEstimate *= nMoves;
+        perft_gpu<<<1, nMoves, 0, childStream>>> (childBoards, child_perfts, depth-1, nodeEstimate);
+        cudaDeviceSynchronize();
+
+        for (uint32 i = 0; i < nMoves; i++)
+        {
+            childPerft += child_perfts[i];
+        }
+
+        cudaFree(childBoards);
+        cudaFree(child_perfts);
+        cudaStreamDestroy(childStream);
+    }
+    else
+    {
+        // call recursively in same thread
+        for (uint32 i = 0; i < nMoves; i++)
+        {
+            BoardPosition temp = *pos;
+            makeMove(&temp, moves[i]);
+            childPerft += perft(&temp, depth - 1);
+        }
+    }
+    
+    
+    *moveCounter = childPerft;
+}
+#endif // #if TEST_GPU_PERFT == 1

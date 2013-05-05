@@ -16,7 +16,7 @@ typedef unsigned long long uint64;
 #define CT_ASSERT(expr) \
 int __static_assert(int static_assert_failed[(expr)?1:-1])
 
-#define BIT(i)   (1 << (i))
+#define BIT(i)   (1ULL << (i))
 
 // Terminology:
 //
@@ -101,9 +101,22 @@ int __static_assert(int static_assert_failed[(expr)?1:-1])
 #define PROMOTION_BISHOP   6
 #define PROMOTION_KNIGHT   7
 
-// castle flags in board position (2 and 4)
-#define CASTLE_FLAG_KING_SIDE   BIT(CASTLE_KING_SIDE)
-#define CASTLE_FLAG_QUEEN_SIDE  BIT(CASTLE_QUEEN_SIDE)
+// castle flags in board position (1 and 2)
+#define CASTLE_FLAG_KING_SIDE   1
+#define CASTLE_FLAG_QUEEN_SIDE  2
+
+
+enum eSquare
+{
+    A1, B1, C1, D1, E1, F1, G1, H1,
+    A2, B2, C2, D2, E2, F2, G2, H2,
+    A3, B3, C3, D3, E3, F3, G3, H3,
+    A4, B4, C4, D4, E4, F4, G4, H4,
+    A5, B5, C5, D5, E5, F5, G5, H5,
+    A6, B6, C6, D6, E6, F6, G6, H6,
+    A7, B7, C7, D7, E7, F7, G7, H7,
+    A8, B8, C8, D8, E8, F8, G8, H8,
+};
 
 // size 128 bytes
 // let's hope this fits in register file
@@ -115,12 +128,13 @@ struct BoardPosition
 
         struct
         {
-            uint8 row0[8];  uint8 padding0[4];
+            uint8 row0[8];  uint8 padding0[3];
 
-            uint8 chance;        // whose move it is
-            uint8 whiteCastle;   // whether white can castle
-            uint8 blackCastle;   // whether black can castle
-            uint8 enPassent;     // col + 1 (where col is the file on which enpassent is possible)
+            uint8 chance;           // whose move it is
+            uint8 whiteCastle;      // whether white can castle
+            uint8 blackCastle;      // whether black can castle
+            uint8 enPassent;        // col + 1 (where col is the file on which enpassent is possible)
+            uint8 halfMoveCounter;  // to detect draw using 50 move rule
 
             uint8 row1[8]; uint8 padding1[8];
             uint8 row2[8]; uint8 padding2[8];
@@ -162,6 +176,51 @@ struct Move
     uint8  flags;           // flags to indicate special moves, e.g castling, en passent, promotion, etc
 };
 CT_ASSERT(sizeof(Move) == 4);
+
+
+// position of the board in bit-board representation
+struct QuadBitBoardPosition
+{
+    // 32 bytes of dense bitboard data
+    uint64   black;   // 1 - black, 0 - white/empty
+    uint64   PBQ;     // pawns, bishops and queens
+    uint64   NB;      // knights and bishops
+    uint64   RQK;     // rooks, queens and kings
+
+    // 8 bytes of state / free space
+    uint8    chance;            // whose move it is
+    uint8    whiteCastle;       // whether white can castle
+    uint8    blackCastle;       // whether black can castle
+    uint8    enPassent;         // col + 1 (where col is the file on which enpassent is possible)
+    uint8    halfMoveCounter;   // to detect 50 move draw rule
+    uint8    padding[3];        // free space to store additional info if needed
+};
+CT_ASSERT(sizeof(QuadBitBoardPosition) == 40);
+
+// another bit-board based board representation using 6 bitboards
+struct HexaBitBoardPosition
+{
+    // 48 bytes of bitboard data with interleaved game state data in pawn bitboards
+    uint64   whitePieces;
+    union
+    {
+        uint64   pawns;
+        struct 
+        {
+            uint8 whiteCastle       : 2;
+            uint8 blackCastle       : 2;
+            uint8 enPassent         : 4;         // file + 1 (file is the file containing the enpassent-target pawn)
+            uint8 padding[6];
+            uint8 halfMoveCounter   : 7;         // to detect 50 move draw rule
+            uint8 chance            : 1;
+        };
+    };
+    uint64   knights;
+    uint64   bishopQueens;
+    uint64   rookQueens;
+    uint64   kings;
+};
+CT_ASSERT(sizeof(HexaBitBoardPosition) == 48);
 
 
 
@@ -229,10 +288,13 @@ public:
 
     // displays a move in human readable form
     static void displayMove(Move move);
+    static void displayMoveBB(Move move);
 
     static void board088ToChar(char board[8][8], BoardPosition *pos);
     static void boardCharTo088(BoardPosition *pos, char board[8][8]);
 
+    static void board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088);
+    static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB);
 
 	// reads a FEN string and sets board and other Game Data accorodingly
 	static void readFENString(char fen[], BoardPosition *pos);

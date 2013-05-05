@@ -145,6 +145,112 @@ void Utils::board088ToChar(char board[8][8], BoardPosition *pos)
     }
 }
 
+// convert 088 board to hex bit board
+void Utils::board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088)
+{
+    memset(posBB, 0, sizeof(HexaBitBoardPosition));
+
+    for (uint8 i=0;i<64;i++)
+    {
+        uint8 rank = i >> 3;
+        uint8 file = i & 7;
+        uint8 index088 = INDEX088(rank, file);
+        uint8 colorpiece = pos088->board[index088];
+        if (colorpiece != EMPTY_SQUARE)
+        {
+            uint8 color = COLOR(colorpiece);
+            uint8 piece = PIECE(colorpiece);
+            if (color == WHITE)
+            {
+                posBB->whitePieces |= BIT(i);
+            }
+            switch (piece)
+            {
+                case PAWN:
+                    posBB->pawns |= BIT(i);
+                    break;
+                case KNIGHT:
+                    posBB->knights |= BIT(i);
+                    break;
+                case BISHOP:
+                    posBB->bishopQueens |= BIT(i);
+                    break;
+                case ROOK:
+                    posBB->rookQueens |= BIT(i);
+                    break;
+                case QUEEN:
+                    posBB->bishopQueens |= BIT(i);
+                    posBB->rookQueens |= BIT(i);
+                    break;
+                case KING:
+                    posBB->kings |= BIT(i);
+                    break;
+            }
+        }
+    }
+
+    posBB->chance = pos088->chance;
+    posBB->blackCastle = pos088->blackCastle;
+    posBB->whiteCastle = pos088->whiteCastle;
+    posBB->enPassent = pos088->enPassent;
+    posBB->halfMoveCounter = pos088->halfMoveCounter;
+}
+
+// convert bitboard to 088 board
+void Utils::boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
+{
+    memset(pos088, 0, sizeof(BoardPosition));
+
+    uint64 allPieces = posBB->kings | posBB->knights | posBB->pawns | posBB->rookQueens | posBB->bishopQueens;
+    uint64 queens = posBB->bishopQueens & posBB->rookQueens;
+
+    for (uint8 i=0;i<64;i++)
+    {
+        uint8 rank = i >> 3;
+        uint8 file = i & 7;
+        uint8 index088 = INDEX088(rank, file);
+        
+        if (allPieces & BIT(i))
+        {
+            uint8 color = (posBB->whitePieces & BIT(i)) ? WHITE : BLACK;
+            uint8 piece = 0;
+            if (posBB->kings & BIT(i))
+            {
+                piece = KING;
+            } 
+            else if (posBB->knights & BIT(i))
+            {
+                piece = KNIGHT;
+            }
+            else if (posBB->pawns & BIT(i))
+            {
+                piece = PAWN;
+            }
+            else if (queens & BIT(i))
+            {
+                piece = QUEEN;
+            }
+            else if (posBB->bishopQueens & BIT(i))
+            {
+                piece = BISHOP;
+            }
+            else if (posBB->rookQueens & BIT(i))
+            {
+                piece = ROOK;
+            }
+            assert(piece);
+
+            pos088->board[index088] = COLOR_PIECE(color, piece);
+        }
+    }
+
+    pos088->chance          = posBB->chance;
+    pos088->blackCastle     = posBB->blackCastle;
+    pos088->whiteCastle     = posBB->whiteCastle;
+    pos088->enPassent       = posBB->enPassent;
+    pos088->halfMoveCounter = posBB->halfMoveCounter;
+}
+
 
 void Utils::dispBoard(BoardPosition *pos)
 {
@@ -206,6 +312,29 @@ void Utils::displayMove(Move move)
 	char sep = move.capturedPiece ? '*' : '-';
 
 	sprintf(dispString, "%c%d%c%c%d ", 
+            c1+'a', 
+            r1, 
+			sep,
+            c2+'a', 
+            r2);
+
+    printf(dispString);
+}
+
+void Utils::displayMoveBB(Move move) 
+{
+	char dispString[10];
+
+    uint8 r1, c1, r2, c2;
+    r1 = (move.src >> 3)+1;
+    c1 = (move.src) & 0x7;
+
+    r2 = (move.dst >> 3)+1;
+	c2 = (move.dst) & 0x7;
+
+	char sep = move.capturedPiece ? '*' : '-';
+
+	sprintf(dispString, "%c%d%c%c%d \n", 
             c1+'a', 
             r1, 
 			sep,
