@@ -48,11 +48,11 @@
 
 // used for castling checks
 #define F1G1      C64(0x60)
-#define B1D1      C64(0x0E)
+#define C1D1      C64(0x0C)
 
 // used for castling checks
 #define F8G8      C64(0x6000000000000000)
-#define B8D8      C64(0x0E00000000000000)
+#define C8D8      C64(0x0C00000000000000)
 
 
 #define ALLSET    C64(0xFFFFFFFFFFFFFFFF)
@@ -1346,8 +1346,8 @@ public:
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance);
             }
             if ((pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
-                !(B1D1 & allPieces) &&                          // squares between king and rook are empty
-                !(B1D1 & threatened))                           // and not in threat from enemy pieces
+                !(C1D1 & allPieces) &&                          // squares between king and rook are empty
+                !(C1D1 & threatened))                           // and not in threat from enemy pieces
             {
                 // white queen side castle
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(C1), BIT(A1), BIT(D1), chance);
@@ -1363,8 +1363,8 @@ public:
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance);
             }
             if ((pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
-                !(B8D8 & allPieces) &&                          // squares between king and rook are empty
-                !(B8D8 & threatened))                           // and not in threat from enemy pieces
+                !(C8D8 & allPieces) &&                          // squares between king and rook are empty
+                !(C8D8 & threatened))                           // and not in threat from enemy pieces
             {
                 // black queen side castle
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(C8), BIT(A8), BIT(D8), chance);
@@ -1429,7 +1429,7 @@ public:
             bishops ^= bishop;
         }
         // remaining bishops/queens
-        bishops = myBishops ^ bishops;
+        bishops = myBishops & ~pinned;
         while (bishops)
         {
             uint64 bishop = getOne(bishops);
@@ -1464,7 +1464,7 @@ public:
             rooks ^= rook;
         }
         // remaining rooks/queens
-        rooks = myRooks ^ rooks;
+        rooks = myRooks & ~pinned;
         while (rooks)
         {
             uint64 rook = getOne(rooks);
