@@ -649,7 +649,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | pos->pawns | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -707,7 +707,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | pos->pawns | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -754,7 +754,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | pos->pawns | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -843,7 +843,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | pos->pawns | pos->knights) & dst);;
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);;
             Utils::displayMoveBB(move);
         }
 #endif
@@ -1105,7 +1105,7 @@ public:
                     {
                         // double push (only possible if single push was possible and single push didn't save the king)
                         dst = ((chance == WHITE) ? northOne(dst & checkingRankDoublePush): 
-                                                   southOne(dst & checkingRankDoublePush) ) & (safeSquares);
+                                                   southOne(dst & checkingRankDoublePush) ) & (safeSquares) &(~allPieces);
 
                         if (dst) 
                         {
