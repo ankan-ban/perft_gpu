@@ -54,6 +54,12 @@
 #define F8G8      C64(0x6000000000000000)
 #define C8D8      C64(0x0C00000000000000)
 
+// used to update castle flags
+#define WHITE_KING_SIDE_ROOK   C64(0x0000000000000080)
+#define WHITE_QUEEN_SIDE_ROOK  C64(0x0000000000000001)
+#define BLACK_KING_SIDE_ROOK   C64(0x8000000000000000)
+#define BLACK_QUEEN_SIDE_ROOK  C64(0x0100000000000000)
+    
 
 #define ALLSET    C64(0xFFFFFFFFFFFFFFFF)
 #define EMPTY     C64(0x0)
@@ -550,10 +556,8 @@ public:
     }
 
 
-    static uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces)
+    static uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
     {
-        uint8 kingIndex = bitScan(myKing);
-
         // check for sliding attacks to the king's square
 
         // It doesn't matter if we process more attackers behind the first attackers
@@ -592,8 +596,8 @@ public:
     // the king shouldn't ever attempt to move to a threatened square
     // TODO: maybe make this tempelated on color?
     static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
-                                      uint64 enemyPawns, uint64 enemyKnights, uint64 enemyKing,
-                                      uint8 enemyColor)
+                                      uint64 enemyPawns, uint64 enemyKnights, uint64 enemyKing, 
+                                      uint64 myKing, uint8 enemyColor)
     {
         uint64 attacked = 0;
 
@@ -613,10 +617,10 @@ public:
         attacked |= knightAttacks(enemyKnights);
         
         // 3. bishop attacks
-        attacked |= bishopAttacks(enemyBishops, emptySquares);
+        attacked |= bishopAttacks(enemyBishops, emptySquares | myKing); // squares behind king are also under threat (in the sense that king can't go there)
 
         // 4. rook attacks
-        attacked |= rookAttacks(enemyRooks, emptySquares);
+        attacked |= rookAttacks(enemyRooks, emptySquares | myKing); // squares behind king are also under threat
 
         // 5. King attacks
         attacked |= kingAttacks(enemyKing);
@@ -638,6 +642,21 @@ public:
     }
 
 
+    __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst)
+    {
+        // TODO: might want to try some bitwise operator magic 
+        //       or if/else on chance (don't forget to modify addSlidingMove if you decide to add if/else on chance)
+        if (dst & BLACK_KING_SIDE_ROOK)
+            pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
+        else if (dst & BLACK_QUEEN_SIDE_ROOK)
+            pos->blackCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+
+        if (dst & WHITE_KING_SIDE_ROOK)
+            pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
+        else if (dst & WHITE_QUEEN_SIDE_ROOK)
+            pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+    }
+
     __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                              uint64 src, uint64 dst, uint8 chance)
     {
@@ -649,7 +668,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->rookQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -688,9 +707,7 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         //newBoard.halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
-
-        // TODO: need to update castle flag if the captured piece is a rook
-        // another solution is to don't update the flag, but check if the piece is a rook when generating castlings
+        updateCastleFlag(&newBoard, src | dst);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -707,7 +724,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights | pos->rookQueens) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -735,9 +752,7 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         //newBoard.halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
-
-        // TODO: need to update castle flag if the captured piece is a rook
-        // another solution is to don't update the flag, but check if the piece is a rook when generating castlings
+        updateCastleFlag(&newBoard, dst);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -754,7 +769,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);
+            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights | pos->rookQueens) & dst);
             Utils::displayMoveBB(move);
         }
 #endif
@@ -784,6 +799,7 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         // newBoard.halfMoveCounter++;   // quiet move -> increment half move counter (TODO: fix this for captures)
+        updateCastleFlag(&newBoard, dst);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -843,7 +859,7 @@ public:
             move.src = bitScan(src);
             move.dst = bitScan(dst);
             move.flags = 0;
-            move.capturedPiece = !!((pos->bishopQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);;
+            move.capturedPiece = !!((pos->bishopQueens | pos->rookQueens | pos->knights | (pos->pawns & RANKS2TO7) | pos->knights) & dst);;
             Utils::displayMoveBB(move);
         }
 #endif
@@ -866,7 +882,8 @@ public:
             newBoard.whitePieces  = pos->whitePieces  & ~dst;
         }
 
-        // TODO: need to update castle flag if the captured piece is a rook
+        // no need to update castle flag if the captured piece is a rook
+        // as normal pawn moves (except for promotion) can't capture a rook from it's base position
 
         // update game state (the old game state already got copied over above when copying pawn bitboard)
         newBoard.chance = !chance;
@@ -925,7 +942,7 @@ public:
         newBoard.halfMoveCounter = 0;   // reset half move counter for en-passent
         newBoard.enPassent = 0;
 
-        // TODO: need to update castle flag if the captured piece is a rook
+        // no need to update castle flag for en-passent
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -975,6 +992,7 @@ public:
             newBoard.chance = !chance;
             newBoard.enPassent = 0;
             newBoard.halfMoveCounter = 0;   // reset half move counter for pawn push
+            updateCastleFlag(&newBoard, dst);
 
             // add the moves
             // 1. promotion to knight
@@ -1214,16 +1232,21 @@ public:
         uint64 enemyBishops = pos->bishopQueens & enemyPieces;
         uint64 enemyRooks   = pos->rookQueens & enemyPieces;
 
-        uint64 pinned     = findPinnedPieces(pos->kings & myPieces, myPieces, enemyBishops, enemyRooks, allPieces);
-        uint64 threatened = findAttackedSquares(~allPieces, enemyBishops, enemyRooks, allPawns & enemyPieces, 
-                                                pos->knights & enemyPieces, pos->kings & enemyPieces, !chance);
+        uint64 myKing     = pos->kings & myPieces;
+        uint8  kingIndex  = bitScan(myKing);
 
-        uint8 kingIndex = bitScan(pos->kings & myPieces);
+        uint64 pinned     = findPinnedPieces(pos->kings & myPieces, myPieces, enemyBishops, enemyRooks, allPieces, kingIndex);
+
+        uint64 threatened = findAttackedSquares(~allPieces, enemyBishops, enemyRooks, allPawns & enemyPieces, 
+                                                pos->knights & enemyPieces, pos->kings & enemyPieces, 
+                                                myKing, !chance);
+
+
 
         // king is in check: call special generate function to generate only the moves that take king out of check
         if (threatened & (pos->kings & myPieces))
         {
-            return generateMovesOutOfCheck(pos, newPositions, allPawns, allPieces, myPieces, enemyBishops, 
+            return generateMovesOutOfCheck(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
                                            pinned, threatened, chance, kingIndex);
         }
 
@@ -1372,8 +1395,6 @@ public:
         }
         
         // generate king moves
-        uint64 myKing = pos->kings & myPieces;
-
 #if USE_KING_LUT == 1
         uint64 kingMoves = KingAttacks[kingIndex];
 #else
