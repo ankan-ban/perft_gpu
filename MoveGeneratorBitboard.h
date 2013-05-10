@@ -7,18 +7,18 @@
     bool printMoves = false;
 #endif
 
-#define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 0
+#define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
 
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 0
 
 // use lookup table for king moves
-#define USE_KING_LUT 0
+#define USE_KING_LUT 1
 
 // use lookup table for knight moves
-#define USE_KNIGHT_LUT 0
+#define USE_KNIGHT_LUT 1
 
-// use lookup table (magics) for sliding moves
+// use lookup table (magics) for sliding moves (TODO)
 #define USE_SLIDING_LUT 0
 
 // bit board constants
@@ -1037,10 +1037,11 @@ public:
     }
 
 
-    static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
+    template<uint8 chance>
+    __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
-                                           uint8 chance, uint8 kingIndex)
+                                           uint8 kingIndex)
     {
         uint32 nMoves = 0;
         uint64 king = pos->kings & myPieces;
@@ -1224,11 +1225,12 @@ public:
     // returns the no of moves generated
     // newPositions contains the new positions after making the generated moves
     // returns only count if newPositions is NULL
+    template <uint8 chance>
     static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
     {
         uint32 nMoves = 0;
 
-        uint8 chance = pos->chance;
+        //uint8 chance = pos->chance;
 
         // TODO: implement fast path for count only
         // might be better to do it either in a seperate function.. or make this function templated on countOnly
@@ -1259,8 +1261,8 @@ public:
         // king is in check: call special generate function to generate only the moves that take king out of check
         if (threatened & (pos->kings & myPieces))
         {
-            return generateMovesOutOfCheck(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
-                                           pinned, threatened, chance, kingIndex);
+            return generateMovesOutOfCheck<chance>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
+                                                   pinned, threatened, kingIndex);
         }
 
         // 1. pawn moves
@@ -1367,8 +1369,8 @@ public:
                 // really painful condition!!@!
                 uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
                 uint64 propogator = (~allPieces) | enPassentCapturedPiece | pawn;
-                bool causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
-                                   (pos->kings & myPieces);
+                uint64 causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
+                                     (pos->kings & myPieces);
                 if (!causesCheck)
                 {
                     addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
@@ -1526,3 +1528,7 @@ public:
         return nMoves;
     }    
 };
+
+// instances of move generator
+template uint32 MoveGeneratorBitboard::generateMoves<BLACK>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+template uint32 MoveGeneratorBitboard::generateMoves<WHITE>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);

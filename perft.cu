@@ -65,7 +65,16 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
         printMoves = false;
     */
 
-    uint32 nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions);
+    uint32 nMoves = 0;
+    uint8 chance = pos->chance;
+    if (chance == BLACK)
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK>(pos, newPositions);
+    }
+    else
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE>(pos, newPositions);
+    }
 
     if (depth == 1)
         return nMoves;
