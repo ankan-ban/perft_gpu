@@ -59,12 +59,11 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
     HexaBitBoardPosition newPositions[256];
 
     /*
-    if (depth == 4)
+    if (depth == 2)
         printMoves = true;
     else
         printMoves = false;
     */
-    
 
     uint32 nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions);
 
@@ -76,8 +75,8 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
     for (uint32 i=0; i < nMoves; i++)
     {
         uint64 childPerft = perft_bb(&newPositions[i], depth - 1);
-        //if (depth == 4)
-        //    printf("%llu\n", childPerft);
+        /*if (depth == 2)
+            printf("%llu\n", childPerft);*/
         count += childPerft;
     }
 
@@ -94,25 +93,27 @@ int main()
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
 
-    // bug at depth 7
+    // no bug bug till depth 7
     //Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
 
-    // bug at 3
+    // No bug till depth 6!
     Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
 
     // No bug till depth 7!
     // Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
 
-    // bug at 6
+    // no bug till depth 6
     //Utils::readFENString("r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1", &testBoard); // position 4
     //Utils::readFENString("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", &testBoard); // mirror of position 4
     
-    // bug at 5
+    // no bug till depth 6!
     //Utils::readFENString("rnbqkb1r/pp1p1ppp/2p5/4P3/2B5/8/PPP1NnPP/RNBQK2R w KQkq - 0 6", &testBoard);   // position 5
+
+    // no bug till depth 7
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
 
-    
-//    Utils::readFENString("rnbqk2r/pp1p1ppp/2p5/4P3/1bB5/8/PPPKNnPP/RNBQ3R w kq - 0 6", &testBoard); // temp test
+    //Utils::readFENString("rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6", &testBoard); // temp test
+
 
     HexaBitBoardPosition testBB;
     Utils::board088ToHexBB(&testBB, &testBoard);
@@ -128,9 +129,9 @@ int main()
     */
     uint64 bbMoves;
 
-    for (int depth=1;depth<9;depth++)
+    //for (int depth=1;depth<9;depth++)
     {
-        //int depth = 3;
+        int depth = 5;
         START_TIMER
         bbMoves = perft_bb(&testBB, depth);
         STOP_TIMER

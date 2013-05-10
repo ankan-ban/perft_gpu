@@ -2,10 +2,12 @@
 #include <intrin.h>
 
 
-#define DEBUG_PRINT_MOVES 1
+#define DEBUG_PRINT_MOVES 0
 #if DEBUG_PRINT_MOVES == 1
     bool printMoves = false;
 #endif
+
+#define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 0
 
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 0
@@ -49,10 +51,12 @@
 // used for castling checks
 #define F1G1      C64(0x60)
 #define C1D1      C64(0x0C)
+#define B1D1      C64(0x0E)
 
 // used for castling checks
 #define F8G8      C64(0x6000000000000000)
 #define C8D8      C64(0x0C00000000000000)
+#define B8D8      C64(0x0E00000000000000)
 
 // used to update castle flags
 #define WHITE_KING_SIDE_ROOK   C64(0x0000000000000080)
@@ -644,8 +648,16 @@ public:
 
     __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst)
     {
-        // TODO: might want to try some bitwise operator magic 
-        //       or if/else on chance (don't forget to modify addSlidingMove if you decide to add if/else on chance)
+
+#if USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION == 1
+        // bitwise magic is actually 0.5 - 0.6% slower than the if/else condition below!
+        pos->blackCastle &= ~( ((dst & BLACK_KING_SIDE_ROOK ) >> H8)      |
+                               ((dst & BLACK_QUEEN_SIDE_ROOK) >> (A8-1))) ;
+
+        pos->whiteCastle &= ~( ((dst & WHITE_KING_SIDE_ROOK ) >> H1) |
+                               ((dst & WHITE_QUEEN_SIDE_ROOK) << 1)) ;
+#else
+        // TODO: might want to add a if/else on chance (don't forget to modify addSlidingMove if you decide to add if/else on chance)
         if (dst & BLACK_KING_SIDE_ROOK)
             pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
         else if (dst & BLACK_QUEEN_SIDE_ROOK)
@@ -655,6 +667,7 @@ public:
             pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
         else if (dst & WHITE_QUEEN_SIDE_ROOK)
             pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+#endif
     }
 
     __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
@@ -1259,6 +1272,19 @@ public:
         // checking rank for pawn double pushes
         uint64 checkingRankDoublePush = RANK3 << (chance * 24);           // rank 3 or rank 6
 
+        uint64 enPassentTarget = 0;
+        if (pos->enPassent)
+        {
+            if (chance == BLACK)
+            {
+                enPassentTarget = BIT(pos->enPassent - 1) << (8 * 2);
+            }
+            else
+            {
+                enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
+            }
+        }
+
         while (pinnedPawns)
         {
             uint64 pawn = getOne(pinnedPawns);
@@ -1279,35 +1305,31 @@ public:
                 if (dst) addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, pawnIndex);
             }
 
-            line &= enemyPieces;
+            //line &= enemyPieces;
 
             // captures
             // (either of them will be valid - if at all)
             dst  = ((chance == WHITE) ? northWestOne(pawn) : southWestOne(pawn)) & line;
             dst |= ((chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn)) & line;
-            if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+            
+            if (dst & enemyPieces) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
 
             // en-passent capture isn't possible by a pinned pawn
             // TODO: think more about it
+            // it's actually possible, if the pawn moves in the 'direction' of the pin
+            // check out the position: rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6
+            // at depth 2
+            if (dst & enPassentTarget)
+            {
+                addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+            }
 
+            
 
             pinnedPawns ^= pawn;  // same as &= ~pawn (but only when we know that the first set contain the element we want to clear)
         }
 
         myPawns = myPawns & ~pinned;
-
-        uint64 enPassentTarget = 0;
-        if (pos->enPassent)
-        {
-            if (chance == BLACK)
-            {
-                enPassentTarget = BIT(pos->enPassent - 1) << (8 * 2);
-            }
-            else
-            {
-                enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
-            }
-        }
 
         while (myPawns)
         {
@@ -1369,7 +1391,7 @@ public:
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance);
             }
             if ((pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
-                !(C1D1 & allPieces) &&                          // squares between king and rook are empty
+                !(B1D1 & allPieces) &&                          // squares between king and rook are empty
                 !(C1D1 & threatened))                           // and not in threat from enemy pieces
             {
                 // white queen side castle
@@ -1386,7 +1408,7 @@ public:
                 addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance);
             }
             if ((pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
-                !(C8D8 & allPieces) &&                          // squares between king and rook are empty
+                !(B8D8 & allPieces) &&                          // squares between king and rook are empty
                 !(C8D8 & threatened))                           // and not in threat from enemy pieces
             {
                 // black queen side castle
