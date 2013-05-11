@@ -67,6 +67,7 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 
     uint32 nMoves = 0;
     uint8 chance = pos->chance;
+#if USE_TEMPLATE_CHANCE_OPT == 1
     if (chance == BLACK)
     {
         nMoves = MoveGeneratorBitboard::generateMoves<BLACK>(pos, newPositions);
@@ -75,7 +76,9 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
     {
         nMoves = MoveGeneratorBitboard::generateMoves<WHITE>(pos, newPositions);
     }
-
+#else
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance);
+#endif
     if (depth == 1)
         return nMoves;
 

@@ -7,6 +7,8 @@
     bool printMoves = false;
 #endif
 
+#define USE_TEMPLATE_CHANCE_OPT 1
+
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
 
 // intel core 2 doesn't have popcnt instruction
@@ -646,27 +648,35 @@ public:
     }
 
 
-    __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst)
+    __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
     {
 
 #if USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION == 1
-        // bitwise magic is actually 0.5 - 0.6% slower than the if/else condition below!
-        pos->blackCastle &= ~( ((dst & BLACK_KING_SIDE_ROOK ) >> H8)      |
-                               ((dst & BLACK_QUEEN_SIDE_ROOK) >> (A8-1))) ;
-
-        pos->whiteCastle &= ~( ((dst & WHITE_KING_SIDE_ROOK ) >> H1) |
-                               ((dst & WHITE_QUEEN_SIDE_ROOK) << 1)) ;
+        if (chance == WHITE)
+        {
+            pos->blackCastle &= ~( ((dst & BLACK_KING_SIDE_ROOK ) >> H8)      |
+                                   ((dst & BLACK_QUEEN_SIDE_ROOK) >> (A8-1))) ;
+        }
+        else
+        {
+            pos->whiteCastle &= ~( ((dst & WHITE_KING_SIDE_ROOK ) >> H1) |
+                                   ((dst & WHITE_QUEEN_SIDE_ROOK) << 1)) ;
+        }
 #else
-        // TODO: might want to add a if/else on chance (don't forget to modify addSlidingMove if you decide to add if/else on chance)
-        if (dst & BLACK_KING_SIDE_ROOK)
-            pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
-        else if (dst & BLACK_QUEEN_SIDE_ROOK)
-            pos->blackCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
-
-        if (dst & WHITE_KING_SIDE_ROOK)
-            pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
-        else if (dst & WHITE_QUEEN_SIDE_ROOK)
-            pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        if (chance == WHITE)
+        {
+            if (dst & BLACK_KING_SIDE_ROOK)
+                pos->blackCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (dst & BLACK_QUEEN_SIDE_ROOK)
+                pos->blackCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
+        else
+        {
+            if (dst & WHITE_KING_SIDE_ROOK)
+                pos->whiteCastle &= ~CASTLE_FLAG_KING_SIDE;
+            else if (dst & WHITE_QUEEN_SIDE_ROOK)
+                pos->whiteCastle &= ~CASTLE_FLAG_QUEEN_SIDE;
+        }
 #endif
     }
 
@@ -720,7 +730,10 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         //newBoard.halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
-        updateCastleFlag(&newBoard, src | dst);
+
+        // need to update castle flag for both sides (src moved in same side, and dst move on other side)
+        updateCastleFlag(&newBoard, dst,  chance);
+        updateCastleFlag(&newBoard, src, !chance);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -765,7 +778,7 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         //newBoard.halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
-        updateCastleFlag(&newBoard, dst);
+        updateCastleFlag(&newBoard, dst, chance);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -812,7 +825,7 @@ public:
         newBoard.chance = !chance;
         newBoard.enPassent = 0;
         // newBoard.halfMoveCounter++;   // quiet move -> increment half move counter (TODO: fix this for captures)
-        updateCastleFlag(&newBoard, dst);
+        updateCastleFlag(&newBoard, dst, chance);
 
         // add the move
         addMove(nMoves, newPos, &newBoard);
@@ -1005,7 +1018,7 @@ public:
             newBoard.chance = !chance;
             newBoard.enPassent = 0;
             newBoard.halfMoveCounter = 0;   // reset half move counter for pawn push
-            updateCastleFlag(&newBoard, dst);
+            updateCastleFlag(&newBoard, dst, chance);
 
             // add the moves
             // 1. promotion to knight
@@ -1036,12 +1049,17 @@ public:
         }
     }
 
-
+#if USE_TEMPLATE_CHANCE_OPT == 1
     template<uint8 chance>
+#endif
     __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
-                                           uint8 kingIndex)
+                                           uint8 kingIndex
+#if USE_TEMPLATE_CHANCE_OPT != 1
+                                           , uint8 chance
+#endif
+                                           )
     {
         uint32 nMoves = 0;
         uint64 king = pos->kings & myPieces;
@@ -1225,8 +1243,12 @@ public:
     // returns the no of moves generated
     // newPositions contains the new positions after making the generated moves
     // returns only count if newPositions is NULL
+#if USE_TEMPLATE_CHANCE_OPT == 1
     template <uint8 chance>
     static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
+#else
+    static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance)
+#endif
     {
         uint32 nMoves = 0;
 
@@ -1261,8 +1283,13 @@ public:
         // king is in check: call special generate function to generate only the moves that take king out of check
         if (threatened & (pos->kings & myPieces))
         {
+#if USE_TEMPLATE_CHANCE_OPT == 1
             return generateMovesOutOfCheck<chance>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
                                                    pinned, threatened, kingIndex);
+#else
+            return generateMovesOutOfCheck (pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
+                                            pinned, threatened, kingIndex, chance);
+#endif
         }
 
         // 1. pawn moves
@@ -1529,6 +1556,8 @@ public:
     }    
 };
 
+#if USE_TEMPLATE_CHANCE_OPT == 1
 // instances of move generator
 template uint32 MoveGeneratorBitboard::generateMoves<BLACK>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
 template uint32 MoveGeneratorBitboard::generateMoves<WHITE>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+#endif
