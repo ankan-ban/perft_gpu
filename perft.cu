@@ -143,23 +143,31 @@ int main()
     //Utils::readFENString("rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6", &testBoard); // temp test
 
 
-    HexaBitBoardPosition testBB;
-    Utils::board088ToHexBB(&testBB, &testBoard);
-    Utils::boardHexBBTo088(&testBoard, &testBB);
-
+    /*
     // bug!
     printf("\nsquares between: %llu\n", MoveGeneratorBitboard::squaresInBetween(G8, B3));
     printf("\nsquares between: %llu\n", MoveGeneratorBitboard::squaresInBetween(B3, G8));
 
-    /*
     HexaBitBoardPosition newMoves[MAX_MOVES];
     uint32 bbMoves = MoveGeneratorBitboard::generateMoves(&testBB, newMoves);
     */
+    
+    printf("\nEnter FEN String: \n");
+    char fen[1024];
+    gets(fen);
+    Utils::readFENString(fen, &testBoard); // start.. 20 positions
+    Utils::dispBoard(&testBoard);
+
+    HexaBitBoardPosition testBB;
+    Utils::board088ToHexBB(&testBB, &testBoard);
+    Utils::boardHexBBTo088(&testBoard, &testBB);
+
+
     uint64 bbMoves;
 
-    //for (int depth=1;depth<9;depth++)
+    for (int depth=1;depth<9;depth++)
     {
-        int depth = 5;
+        //int depth = 5;
         START_TIMER
         bbMoves = perft_bb(&testBB, depth);
         STOP_TIMER
@@ -177,17 +185,13 @@ int main()
     //printf("\nMoves generated: %d\n", nMoves);
 
 
-    printf("\nEnter FEN String: \n");
-    char fen[1024];
-    gets(fen);
-    Utils::readFENString(fen, &testBoard); // start.. 20 positions
-    Utils::dispBoard(&testBoard);
-
+    /*
     int depth;
     printf("\nEnter depth: ");
     scanf("%d", &depth);
-
-    //for (int depth=1;depth<7;depth++)
+    */
+/*
+    for (int depth=1;depth<7;depth++)
     {
         
         uint64 leafNodes;
@@ -232,6 +236,6 @@ int main()
         cudaFree(gpuBoard);
 #endif
 	}
-
+*/
     return 0;
 }

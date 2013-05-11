@@ -76,7 +76,13 @@
 __forceinline uint8 popCount(uint64 x)
 {
 #if USE_POPCNT == 1
+#ifdef _WIN64
     return __popcnt64(x);
+#else
+    uint32 lo = (uint32)  x;
+    uint32 hi = (uint32) (x >> 32);
+    return _mm_popcnt_u32(lo) + _mm_popcnt_u32(hi);
+#endif
 #else
 
     // taken from chess prgramming wiki: http://chessprogramming.wikispaces.com/Population+Count

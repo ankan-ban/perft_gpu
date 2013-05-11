@@ -424,8 +424,10 @@ public:
 
 
 // routines to make a move on the board and to undo it
-
-__host__ __device__ void makeMove(BoardPosition *pos, Move move)
+#if TEST_GPU_PERFT == 1
+__host__ __device__ 
+#endif
+void makeMove(BoardPosition *pos, Move move)
 {
     uint8 piece = PIECE(pos->board[move.src]);
     uint32 chance = pos->chance;
@@ -550,7 +552,10 @@ __host__ __device__ void makeMove(BoardPosition *pos, Move move)
     pos->chance = !chance;
 }
 
-__host__ __device__ void undoMove(BoardPosition *pos, Move move, uint8 bc, uint8 wc, uint8 enPassent)
+#if TEST_GPU_PERFT == 1
+__host__ __device__ 
+#endif
+void undoMove(BoardPosition *pos, Move move, uint8 bc, uint8 wc, uint8 enPassent)
 {
     pos->board[move.src] = pos->board[move.dst];    
     pos->board[move.dst] = move.capturedPiece;
@@ -563,7 +568,10 @@ __host__ __device__ void undoMove(BoardPosition *pos, Move move, uint8 bc, uint8
 
 
 // recursive perft search
-__device__ __host__ uint64 perft(BoardPosition *pos, int depth)
+#if TEST_GPU_PERFT == 1
+__device__ __host__ 
+#endif
+uint64 perft(BoardPosition *pos, int depth)
 {
     Move moves[MAX_MOVES];
     uint64 childPerft = 0;
