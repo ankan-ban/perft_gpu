@@ -11,6 +11,9 @@
 
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
 
+// Move counting (countOnly) doesn't work with old method
+#define EN_PASSENT_GENERATION_NEW_METHOD 1
+
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 0
 
@@ -1050,14 +1053,14 @@ public:
     }
 
 #if USE_TEMPLATE_CHANCE_OPT == 1
-    template<uint8 chance>
+    template<uint8 chance, bool countOnly>
 #endif
     __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
                                            uint8 kingIndex
 #if USE_TEMPLATE_CHANCE_OPT != 1
-                                           , uint8 chance
+                                           , uint8 chance, bool countOnly
 #endif
                                            )
     {
@@ -1093,6 +1096,11 @@ public:
 #endif
 
         kingMoves &= ~(threatened | myPieces);  // king can't move to a square under threat or a square containing piece of same side
+        if (countOnly)
+        {
+            nMoves += popCount(kingMoves);
+        } 
+        else
         while(kingMoves)
         {
             uint64 dst = getOne(kingMoves);
@@ -1149,7 +1157,8 @@ public:
                 {
                     if (dst & safeSquares)
                     {
-                        addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                        if (countOnly) nMoves++;
+                        else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
                     }
                     else
                     {
@@ -1159,7 +1168,8 @@ public:
 
                         if (dst) 
                         {
-                            addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn));
+                            if (countOnly) nMoves++;
+                            else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn));
                         }
                     }
                 }
@@ -1168,11 +1178,19 @@ public:
                 uint64 westCapture = (chance == WHITE) ? northWestOne(pawn) : southWestOne(pawn);
                 uint64 eastCapture = (chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn);
                 dst = (westCapture | eastCapture) & enemyPieces & safeSquares;
-                if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                if (dst) 
+                {
+                    if (countOnly) nMoves++;    
+                    else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                }
 
                 // en-passent 
                 dst = (westCapture | eastCapture) & enPassentTarget;
-                if (dst) addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                if (dst) 
+                {
+                    if (countOnly) nMoves++;
+                    else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                }
 
                 myPawns ^= pawn;
             }
@@ -1187,6 +1205,11 @@ public:
 #else
                 uint64 knightMoves = knightAttacks(knight) & safeSquares;
 #endif
+                if (countOnly) 
+                {
+                    nMoves += popCount(knightMoves);
+                }
+                else
                 while (knightMoves)
                 {
                     uint64 dst = getOne(knightMoves);
@@ -1202,6 +1225,12 @@ public:
             {
                 uint64 bishop = getOne(bishops);
                 uint64 bishopMoves = bishopAttacks(bishop, ~allPieces) & safeSquares;
+
+                if (countOnly) 
+                {
+                    nMoves += popCount(bishopMoves);
+                }
+                else
                 while (bishopMoves)
                 {
                     uint64 dst = getOne(bishopMoves);
@@ -1217,6 +1246,12 @@ public:
             {
                 uint64 rook = getOne(rooks);
                 uint64 rookMoves = rookAttacks(rook, ~allPieces) & safeSquares;
+
+                if (countOnly) 
+                {
+                    nMoves += popCount(rookMoves);
+                }
+                else
                 while (rookMoves)
                 {
                     uint64 dst = getOne(rookMoves);
@@ -1244,10 +1279,10 @@ public:
     // newPositions contains the new positions after making the generated moves
     // returns only count if newPositions is NULL
 #if USE_TEMPLATE_CHANCE_OPT == 1
-    template <uint8 chance>
+    template <uint8 chance, bool countOnly>
     static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
 #else
-    static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance)
+    static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance, bool countOnly)
 #endif
     {
         uint32 nMoves = 0;
@@ -1284,23 +1319,17 @@ public:
         if (threatened & (pos->kings & myPieces))
         {
 #if USE_TEMPLATE_CHANCE_OPT == 1
-            return generateMovesOutOfCheck<chance>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
-                                                   pinned, threatened, kingIndex);
+            return generateMovesOutOfCheck<chance, countOnly>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
+                                                              pinned, threatened, kingIndex);
 #else
             return generateMovesOutOfCheck (pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
-                                            pinned, threatened, kingIndex, chance);
+                                            pinned, threatened, kingIndex, chance, countOnly);
 #endif
         }
 
-        // 1. pawn moves
         uint64 myPawns = allPawns & myPieces;
 
-        // first deal with pinned pawns
-        uint64 pinnedPawns = myPawns & pinned;
-
-        // checking rank for pawn double pushes
-        uint64 checkingRankDoublePush = RANK3 << (chance * 24);           // rank 3 or rank 6
-
+        // 0. generate en-passent moves first
         uint64 enPassentTarget = 0;
         if (pos->enPassent)
         {
@@ -1313,6 +1342,50 @@ public:
                 enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
             }
         }
+#if EN_PASSENT_GENERATION_NEW_METHOD == 1
+        if (enPassentTarget)
+        {
+            uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
+
+            uint64 epSources = ((chance == WHITE) ? southEastOne(enPassentTarget) | southWestOne(enPassentTarget) : 
+                                                    northEastOne(enPassentTarget) | northWestOne(enPassentTarget)) & myPawns;
+
+            while (epSources)
+            {
+                uint64 pawn = getOne(epSources);
+                if (pawn & pinned)
+                {
+                    // the direction of the pin (mask containing all squares in the line joining the king and the current piece)
+                    uint64 line = Line[bitScan(pawn)][kingIndex];
+                    
+                    if (enPassentTarget & line)
+                    {
+                        if (countOnly) nMoves++;
+                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance);
+                    }
+                }
+                else
+                {
+                    uint64 propogator = (~allPieces) | enPassentCapturedPiece | pawn;
+                    uint64 causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
+                                         (pos->kings & myPieces);
+                    if (!causesCheck)
+                    {
+                        if (countOnly) nMoves++;
+                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance);
+                    }
+                }
+                epSources ^= pawn;
+            }
+        }
+#endif
+        // 1. pawn moves
+
+        // checking rank for pawn double pushes
+        uint64 checkingRankDoublePush = RANK3 << (chance * 24);           // rank 3 or rank 6
+
+        // first deal with pinned pawns
+        uint64 pinnedPawns = myPawns & pinned;
 
         while (pinnedPawns)
         {
@@ -1326,33 +1399,50 @@ public:
             uint64 dst = ((chance == WHITE) ? northOne(pawn) : southOne(pawn)) & line & (~allPieces);
             if (dst) 
             {
-                addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, false, pawnIndex);
+                if (countOnly) nMoves++;
+                else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, false, pawnIndex);
 
                 // double push (only possible if single push was possible)
                 dst = ((chance == WHITE) ? northOne(dst & checkingRankDoublePush): 
                                            southOne(dst & checkingRankDoublePush) ) & (~allPieces);
-                if (dst) addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, pawnIndex);
+                if (dst) 
+                {
+                    if (countOnly) nMoves++;
+                    else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, pawnIndex);
+                }
             }
-
-            //line &= enemyPieces;
 
             // captures
             // (either of them will be valid - if at all)
             dst  = ((chance == WHITE) ? northWestOne(pawn) : southWestOne(pawn)) & line;
             dst |= ((chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn)) & line;
             
-            if (dst & enemyPieces) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+            if (dst & enemyPieces) 
+            {
+                if (countOnly) {
+                    if (dst & (RANK1 | RANK8))
+                        nMoves += 4;    // promotion
+                    else
+                        nMoves++;
+                }
+                else 
+                {
+                    addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                }
+            }
 
             // en-passent capture isn't possible by a pinned pawn
             // TODO: think more about it
             // it's actually possible, if the pawn moves in the 'direction' of the pin
             // check out the position: rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6
             // at depth 2
+#if EN_PASSENT_GENERATION_NEW_METHOD != 1
             if (dst & enPassentTarget)
             {
-                addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                if (countOnly) nMoves++;
+                else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
             }
-
+#endif
             
 
             pinnedPawns ^= pawn;  // same as &= ~pawn (but only when we know that the first set contain the element we want to clear)
@@ -1360,6 +1450,33 @@ public:
 
         myPawns = myPawns & ~pinned;
 
+
+        if (countOnly)
+        {
+            // pawn push
+            uint64 dsts = ((chance == WHITE) ? northOne(myPawns) : southOne(myPawns)) & (~allPieces);
+            nMoves += popCount(dsts);
+            uint64 promotions = dsts & (RANK1 | RANK8);
+            nMoves += 3 * popCount(promotions);
+
+            // double push
+            dsts = ((chance == WHITE) ? northOne(dsts & checkingRankDoublePush): 
+                                        southOne(dsts & checkingRankDoublePush) ) & (~allPieces);
+            nMoves += popCount(dsts);
+
+            // captures
+            dsts = ((chance == WHITE) ? northWestOne(myPawns) : southWestOne(myPawns)) & enemyPieces;
+            nMoves += popCount(dsts);
+            promotions = dsts & (RANK1 | RANK8);
+            nMoves += 3 * popCount(promotions);
+
+
+            dsts = ((chance == WHITE) ? northEastOne(myPawns) : southEastOne(myPawns)) & enemyPieces;
+            nMoves += popCount(dsts);
+            promotions = dsts & (RANK1 | RANK8);
+            nMoves += 3 * popCount(promotions);
+        }
+        else
         while (myPawns)
         {
             uint64 pawn = getOne(myPawns);
@@ -1388,6 +1505,7 @@ public:
 
             // en-passent 
             // there can be only a single en-passent capture per pawn
+#if EN_PASSENT_GENERATION_NEW_METHOD != 1
             dst = (westCapture | eastCapture) & enPassentTarget;
             if (dst) 
             {
@@ -1403,13 +1521,11 @@ public:
                     addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
                 }
             }
-
+#endif
 
             myPawns ^= pawn;
         }
 
-        // generate castling moves
-        // TODO: maybe it's better not to branch on chance/color (or maybe it is once we move to templated generateMoves on color)
         if (chance == WHITE)
         {
             if ((pos->whiteCastle & CASTLE_FLAG_KING_SIDE) &&   // castle flag is set
@@ -1417,14 +1533,16 @@ public:
                 !(F1G1 & threatened))                           // and not in threat from enemy pieces
             {
                 // white king side castle
-                addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance);
+                if (countOnly) nMoves++;
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance);
             }
             if ((pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
                 !(B1D1 & allPieces) &&                          // squares between king and rook are empty
                 !(C1D1 & threatened))                           // and not in threat from enemy pieces
             {
                 // white queen side castle
-                addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(C1), BIT(A1), BIT(D1), chance);
+                if (countOnly) nMoves++;
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(C1), BIT(A1), BIT(D1), chance);
             }
         }
         else
@@ -1434,14 +1552,16 @@ public:
                 !(F8G8 & threatened))                           // and not in threat from enemy pieces
             {
                 // black king side castle
-                addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance);
+                if (countOnly) nMoves++;
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance);
             }
             if ((pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
                 !(B8D8 & allPieces) &&                          // squares between king and rook are empty
                 !(C8D8 & threatened))                           // and not in threat from enemy pieces
             {
                 // black queen side castle
-                addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(C8), BIT(A8), BIT(D8), chance);
+                if (countOnly) nMoves++;
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(C8), BIT(A8), BIT(D8), chance);
             }
         }
         
@@ -1453,6 +1573,11 @@ public:
 #endif
 
         kingMoves &= ~(threatened | myPieces);  // king can't move to a square under threat or a square containing piece of same side
+        if (countOnly)
+        {
+            nMoves += popCount(kingMoves);
+        }
+        else
         while(kingMoves)
         {
             uint64 dst = getOne(kingMoves);
@@ -1470,6 +1595,11 @@ public:
 #else
             uint64 knightMoves = knightAttacks(knight) & ~myPieces;
 #endif
+            if (countOnly)
+            {
+                nMoves += popCount(knightMoves);
+            }
+            else
             while (knightMoves)
             {
                 uint64 dst = getOne(knightMoves);
@@ -1492,6 +1622,12 @@ public:
             // TODO: bishopAttacks() function uses a kogge-stone sliding move generator. Switch to magics!
             uint64 bishopMoves = bishopAttacks(bishop, ~allPieces) & ~myPieces;
             bishopMoves &= Line[bitScan(bishop)][kingIndex];    // pined sliding pieces can move only along the line
+
+            if (countOnly)
+            {
+                nMoves += popCount(bishopMoves);
+            }
+            else
             while (bishopMoves)
             {
                 uint64 dst = getOne(bishopMoves);
@@ -1500,12 +1636,19 @@ public:
             }
             bishops ^= bishop;
         }
+
         // remaining bishops/queens
         bishops = myBishops & ~pinned;
         while (bishops)
         {
             uint64 bishop = getOne(bishops);
             uint64 bishopMoves = bishopAttacks(bishop, ~allPieces) & ~myPieces;
+
+            if (countOnly)
+            {
+                nMoves += popCount(bishopMoves);
+            }
+            else
             while (bishopMoves)
             {
                 uint64 dst = getOne(bishopMoves);
@@ -1527,6 +1670,12 @@ public:
             uint64 rook = getOne(rooks);
             uint64 rookMoves = rookAttacks(rook, ~allPieces) & ~myPieces;
             rookMoves &= Line[bitScan(rook)][kingIndex];    // pined sliding pieces can move only along the line
+
+            if (countOnly)
+            {
+                nMoves += popCount(rookMoves);
+            }
+            else
             while (rookMoves)
             {
                 uint64 dst = getOne(rookMoves);
@@ -1535,12 +1684,19 @@ public:
             }
             rooks ^= rook;
         }
+        
         // remaining rooks/queens
         rooks = myRooks & ~pinned;
         while (rooks)
         {
             uint64 rook = getOne(rooks);
             uint64 rookMoves = rookAttacks(rook, ~allPieces) & ~myPieces;
+
+            if (countOnly)
+            {
+                nMoves += popCount(rookMoves);
+            }
+            else
             while (rookMoves)
             {
                 uint64 dst = getOne(rookMoves);
@@ -1558,6 +1714,8 @@ public:
 
 #if USE_TEMPLATE_CHANCE_OPT == 1
 // instances of move generator
-template uint32 MoveGeneratorBitboard::generateMoves<BLACK>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
-template uint32 MoveGeneratorBitboard::generateMoves<WHITE>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+template uint32 MoveGeneratorBitboard::generateMoves<BLACK, false>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+template uint32 MoveGeneratorBitboard::generateMoves<WHITE, false>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+template uint32 MoveGeneratorBitboard::generateMoves<BLACK, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
+template uint32 MoveGeneratorBitboard::generateMoves<WHITE, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
 #endif
