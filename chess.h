@@ -118,6 +118,19 @@ enum eSquare
     A8, B8, C8, D8, E8, F8, G8, H8,
 };
 
+#define TEST_GPU_PERFT 1
+
+#if TEST_GPU_PERFT == 1
+    #ifdef __CUDACC__
+    #define CUDA_CALLABLE_MEMBER __host__ __device__
+    #else
+    #define CUDA_CALLABLE_MEMBER
+    #endif
+#else
+    #define CUDA_CALLABLE_MEMBER
+#endif
+
+
 // size 128 bytes
 // let's hope this fits in register file
 struct BoardPosition

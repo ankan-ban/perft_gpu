@@ -52,71 +52,35 @@ double gTime;
     }
 // for timing CPU code : end
 
-
-// perft counter function. Returns perft of the given board for given depth
-uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
+void initGPU()
 {
-    HexaBitBoardPosition newPositions[256];
+    // 8 should be ok for testing for now
+    int hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 6);
+    printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth returned %d\n", hr);
+
+    hr = cudaDeviceSetLimit(cudaLimitMallocHeapSize, 1*1024*1024*1024); // 1 GB
+    printf("cudaDeviceSetLimit cudaLimitMallocHeapSize returned %d\n", hr);
 
     /*
-    if (depth == 2)
-        printMoves = true;
-    else
-        printMoves = false;
+    hr = cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 256);
+    printf("cudaDeviceSetLimit cudaLimitDevRuntimePendingLaunchCount returned %d\n", hr);
+
+    hr = cudaFuncSetCacheConfig(perft_bb_gpu, cudaFuncCachePreferL1);
+    printf("cudaFuncSetCacheConfig returned %d\n", hr);
+
+
+    // we don't really need big stack ?
+    hr = cudaDeviceSetLimit(cudaLimitStackSize, 1024);
+    printf("cudaDeviceSetLimit stack size returned %d\n", hr);
     */
 
-    uint32 nMoves = 0;
-    uint8 chance = pos->chance;
-
-    if (depth == 1)
-    {
-#if USE_TEMPLATE_CHANCE_OPT == 1
-    if (chance == BLACK)
-    {
-        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, newPositions);
-    }
-    else
-    {
-        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, newPositions);
-    }
-#else
-    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, true);
-#endif
-        return nMoves;
-    }
-
-#if USE_TEMPLATE_CHANCE_OPT == 1
-    if (chance == BLACK)
-    {
-        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, newPositions);
-    }
-    else
-    {
-        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, newPositions);
-    }
-#else
-    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false);
-#endif
-
-    uint64 count = 0;
-
-    for (uint32 i=0; i < nMoves; i++)
-    {
-        uint64 childPerft = perft_bb(&newPositions[i], depth - 1);
-        /*if (depth == 2)
-            printf("%llu\n", childPerft);*/
-        count += childPerft;
-    }
-
-    return count;
 }
-
-
 
 int main()
 {
     BoardPosition testBoard;
 
+    initGPU();
     MoveGeneratorBitboard::init();
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
@@ -152,11 +116,13 @@ int main()
     uint32 bbMoves = MoveGeneratorBitboard::generateMoves(&testBB, newMoves);
     */
     
+    /*
     printf("\nEnter FEN String: \n");
     char fen[1024];
     gets(fen);
     Utils::readFENString(fen, &testBoard); // start.. 20 positions
     Utils::dispBoard(&testBoard);
+    */
 
     HexaBitBoardPosition testBB;
     Utils::board088ToHexBB(&testBB, &testBoard);
@@ -165,77 +131,42 @@ int main()
 
     uint64 bbMoves;
 
-    for (int depth=1;depth<9;depth++)
+    for (int depth=5;depth<6;depth++)
     {
-        //int depth = 5;
+        /*
         START_TIMER
         bbMoves = perft_bb(&testBB, depth);
         STOP_TIMER
         printf("\nPerft %d: %llu,   ", depth, bbMoves);
         printf("Time taken: %g seconds, nps: %llu\n", gTime/1000.0, (uint64) ((bbMoves/gTime)*1000.0));
-    }
-    
-    //printf("\nMoves generated using bitboard: %llu\n", bbMoves);
-
-    //printf("\nSquares in line of the given squres: %llX", MoveGeneratorBitboard::squaresInLine(C8, C4));
-
-
-    //Move moves[MAX_MOVES];
-    //uint32 nMoves = MoveGenerator::generateMoves(&testBoard, moves);
-    //printf("\nMoves generated: %d\n", nMoves);
-
-
-    /*
-    int depth;
-    printf("\nEnter depth: ");
-    scanf("%d", &depth);
-    */
-/*
-    for (int depth=1;depth<7;depth++)
-    {
-        
-        uint64 leafNodes;
-        
-        START_TIMER
-        leafNodes = perft(&testBoard, depth);
-        STOP_TIMER
-        printf("\nPerft %d: %llu,   ", depth, leafNodes);
-        printf("Time taken: %g seconds, nps: %llu\n", gTime/1000.0, (uint64) ((leafNodes/gTime)*1000.0));
-        
-
+        */
 #if TEST_GPU_PERFT == 1
         // try the same thing on GPU
-        int hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, depth);
-        printf("cudaDeviceSetLimit returned %d\n", hr);
-
-        hr = cudaDeviceSetLimit(cudaLimitStackSize, 4*1024);
-        printf("cudaDeviceSetLimit stack size returned %d\n", hr);
-
-        BoardPosition *gpuBoard;
+        HexaBitBoardPosition *gpuBoard;
         uint64 *gpu_perft;
-        cudaMalloc(&gpuBoard, sizeof(BoardPosition));
+        cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
         cudaMalloc(&gpu_perft, sizeof(uint64));
-        hr = cudaMemcpy(gpuBoard, &testBoard, sizeof(BoardPosition), cudaMemcpyHostToDevice);
-        printf("cudaMemcpyHostToDevice returned %d\n", hr);
-        EventTimer gputime;
+        cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
+        printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
 
+        EventTimer gputime;
         gputime.start();
-        perft_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, 1);
+        perft_bb_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth);
         gputime.stop();
         printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
 
         cudaDeviceSynchronize();
 
         uint64 res;
-        hr = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
-        printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString( (cudaError_t) hr));
+        err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
+        printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
 
         printf("\nGPU Perft %d: %llu,   ", depth, res);
         printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) ((res/gputime.elapsed())*1000.0));
 
         cudaFree(gpuBoard);
 #endif
-	}
-*/
+    }
+    
     return 0;
 }

@@ -2,18 +2,6 @@
 
 // a simple 0x88 move generater / perft tool
 
-#define TEST_GPU_PERFT 0
-
-#if TEST_GPU_PERFT == 1
-    #ifdef __CUDACC__
-    #define CUDA_CALLABLE_MEMBER __host__ __device__
-    #else
-    #define CUDA_CALLABLE_MEMBER
-    #endif
-#else
-    #define CUDA_CALLABLE_MEMBER
-#endif
-
 class MoveGenerator
 {
 private:

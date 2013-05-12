@@ -474,7 +474,10 @@
 					>
 					<Tool
 						Name="Cudart Build Rule"
+						GenerateRelocatableDeviceCode="true"
+						MaxRegCount="128"
 						FastMath="true"
+						Optimization="2"
 						Runtime="2"
 						Defines="WIN32"
 					/>

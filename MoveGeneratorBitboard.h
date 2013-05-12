@@ -4,18 +4,24 @@
 
 #define DEBUG_PRINT_MOVES 0
 #if DEBUG_PRINT_MOVES == 1
+    #define DEBUG_PRINT_DEPTH 6
     bool printMoves = false;
 #endif
 
+// only count moves at leaves (instead of generating/making them)
+#define USE_COUNT_ONLY_OPT true
+
+// move generation functions templated on chance
 #define USE_TEMPLATE_CHANCE_OPT 1
 
+// bitwise magic instead of if/else for castle flag updation
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
 
 // Move counting (countOnly) doesn't work with old method
 #define EN_PASSENT_GENERATION_NEW_METHOD 1
 
 // intel core 2 doesn't have popcnt instruction
-#define USE_POPCNT 0
+#define USE_POPCNT 1
 
 // use lookup table for king moves
 #define USE_KING_LUT 1
@@ -73,11 +79,13 @@
 #define ALLSET    C64(0xFFFFFFFFFFFFFFFF)
 #define EMPTY     C64(0x0)
 
-__forceinline uint8 popCount(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline uint8 popCount(uint64 x)
 {
-#if USE_POPCNT == 1
+#ifdef __CUDA_ARCH__
+    return __popcll(x);
+#elif USE_POPCNT == 1
 #ifdef _WIN64
-    return __popcnt64(x);
+    return _mm_popcnt_u64(x);
 #else
     uint32 lo = (uint32)  x;
     uint32 hi = (uint32) (x >> 32);
@@ -102,9 +110,12 @@ __forceinline uint8 popCount(uint64 x)
 
 
 // return the index of first set LSB
-__forceinline uint8 bitScan(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline uint8 bitScan(uint64 x)
 {
-#ifdef _WIN64
+#ifdef __CUDA_ARCH__
+    // __ffsll(x) returns position from 1 to 64 instead of 0 to 63
+    return __ffsll(x) - 1;
+#elif _WIN64
    unsigned long index;
    assert (x != 0);
    _BitScanForward64(&index, x);
@@ -140,48 +151,122 @@ static uint64 KingAttacks    [64];
 static uint64 KnightAttacks  [64];
 static uint64 pawnAttacks[2] [64];
 
+#if TEST_GPU_PERFT == 1
+// gpu version of the above data structures
+// accessed for read only using __ldg() function
+
+// bit mask containing squares between two given squares
+__device__ static uint64 gBetween[64][64];
+
+// bit mask containing squares in the same 'line' as two given squares
+__device__ static uint64 gLine[64][64];
+
+// squares a piece can attack in an empty board
+__device__ static uint64 gRookAttacks    [64];
+__device__ static uint64 gBishopAttacks  [64];
+__device__ static uint64 gQueenAttacks   [64];
+__device__ static uint64 gKingAttacks    [64];
+__device__ static uint64 gKnightAttacks  [64];
+__device__ static uint64 gpawnAttacks[2] [64];
+#endif
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetween(uint8 sq1, uint8 sq2)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gBetween[sq1][sq2]);
+#else
+    return Between[sq1][sq2];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLine(uint8 sq1, uint8 sq2)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gLine[sq1][sq2]);
+#else
+    return Line[sq1][sq2];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gKnightAttacks[sq]);
+#else
+    return KnightAttacks[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gKingAttacks[sq]);
+#else
+    return KingAttacks[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gRookAttacks[sq]);
+#else
+    return RookAttacks[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gBishopAttacks[sq]);
+#else
+    return BishopAttacks[sq];
+#endif
+}
+
+
 class MoveGeneratorBitboard
 {
 private:
 
     // move the bits in the bitboard one square in the required direction
 
-    __forceinline static uint64 northOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northOne(uint64 x)
     {
         return x << 8;
     }
 
-    __forceinline static uint64 southOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southOne(uint64 x)
     {
         return x >> 8;
     }
 
-    __forceinline static uint64 eastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastOne(uint64 x)
     {
         return (x << 1) & (~FILEA);
     }
 
-    __forceinline static uint64 westOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westOne(uint64 x)
     {
         return (x >> 1) & (~FILEH);
     }
 
-    __forceinline static uint64 northEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastOne(uint64 x)
     {
         return (x << 9) & (~FILEA);
     }
 
-    __forceinline static uint64 northWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestOne(uint64 x)
     {
         return (x << 7) & (~FILEH);
     }
 
-    __forceinline static uint64 southEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastOne(uint64 x)
     {
         return (x >> 7) & (~FILEA);
     }
 
-    __forceinline static uint64 southWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestOne(uint64 x)
     {
         return (x >> 9) & (~FILEH);
     }
@@ -196,7 +281,7 @@ private:
 
     // uses kogge-stone algorithm
 
-    __forceinline static uint64 northFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northFill(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -207,7 +292,7 @@ private:
         return gen;
     }
 
-    __forceinline static uint64 southFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southFill(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -218,7 +303,7 @@ private:
         return gen;
     }
 
-    __forceinline static uint64 eastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -231,7 +316,7 @@ private:
         return gen;
     }
     
-    __forceinline static uint64 westFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -245,7 +330,7 @@ private:
     }
 
 
-    __forceinline static uint64 northEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -258,7 +343,7 @@ private:
         return gen;
     }
 
-    __forceinline static uint64 northWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -271,7 +356,7 @@ private:
         return gen;
     }
 
-    __forceinline static uint64 southEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -284,7 +369,7 @@ private:
         return gen;
     }
 
-    __forceinline static uint64 southWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -301,7 +386,7 @@ private:
     // attacks in the given direction
     // need to OR with ~(pieces of side to move) to avoid killing own pieces
 
-    __forceinline static uint64 northAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -312,7 +397,7 @@ private:
         return gen << 8;
     }
 
-    __forceinline static uint64 southAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -323,7 +408,7 @@ private:
         return gen >> 8;
     }
 
-    __forceinline static uint64 eastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -336,7 +421,7 @@ private:
         return (gen << 1) & (~FILEA);
     }
     
-    __forceinline static uint64 westAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -350,7 +435,7 @@ private:
     }
 
 
-    __forceinline static uint64 northEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -363,7 +448,7 @@ private:
         return (gen << 9) & (~FILEA);
     }
 
-    __forceinline static uint64 northWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -376,7 +461,7 @@ private:
         return (gen << 7) & (~FILEH);
     }
 
-    __forceinline static uint64 southEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -389,7 +474,7 @@ private:
         return (gen >> 7) & (~FILEA);
     }
 
-    __forceinline static uint64 southWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -406,7 +491,7 @@ private:
     // attacks by pieces of given type
     // pro - empty squares
 
-    __forceinline static uint64 bishopAttacks(uint64 bishops, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacks(uint64 bishops, uint64 pro)
     {
         return northEastAttacks(bishops, pro) |
                northWestAttacks(bishops, pro) |
@@ -414,7 +499,7 @@ private:
                southWestAttacks(bishops, pro) ;
     }
 
-    __forceinline static uint64 rookAttacks(uint64 rooks, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rooks, uint64 pro)
     {
         return northAttacks(rooks, pro) |
                southAttacks(rooks, pro) |
@@ -422,13 +507,13 @@ private:
                westAttacks (rooks, pro) ;
     }
 
-    __forceinline static uint64 queenAttacks(uint64 queens, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 queenAttacks(uint64 queens, uint64 pro)
     {
         return rookAttacks  (queens, pro) |
                bishopAttacks(queens, pro) ;
     }
 
-    __forceinline static uint64 kingAttacks(uint64 kingSet) 
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 kingAttacks(uint64 kingSet) 
     {
         uint64 attacks = eastOne(kingSet) | westOne(kingSet);
         kingSet       |= attacks;
@@ -438,7 +523,7 @@ private:
 
     // efficient knight attack generator
     // http://chessprogramming.wikispaces.com/Knight+Pattern
-    __forceinline static uint64 knightAttacks(uint64 knights) {
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 knightAttacks(uint64 knights) {
         uint64 l1 = (knights >> 1) & C64(0x7f7f7f7f7f7f7f7f);
         uint64 l2 = (knights >> 2) & C64(0x3f3f3f3f3f3f3f3f);
         uint64 r1 = (knights << 1) & C64(0xfefefefefefefefe);
@@ -452,17 +537,17 @@ private:
 
     // gets one bit (the LSB) from a bitboard
     // returns a bitboard containing that bit
-    __forceinline static uint64 getOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 getOne(uint64 x)
     {
         return x & (-x);
     }
 
-    __forceinline static bool isMultiple(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static bool isMultiple(uint64 x)
     {
         return x ^ getOne(x);
     }
 
-    __forceinline static bool isSingular(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static bool isSingular(uint64 x)
     {
         return !isMultiple(x); 
     }
@@ -568,10 +653,34 @@ public:
                 }
                 Line[i][j] = squaresInLine(i, j);
             }
+#if TEST_GPU_PERFT == 1
+        // copy all the lookup tables from CPU's memory to GPU memory
+        cudaError_t err = cudaMemcpyToSymbol(gBetween, Between, sizeof(Between));
+        printf("For copying between table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));
+
+        err = cudaMemcpyToSymbol(gLine, Line, sizeof(Line));
+        printf("For copying line table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gRookAttacks, RookAttacks, sizeof(RookAttacks));
+        printf("For copying RookAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gBishopAttacks, BishopAttacks, sizeof(BishopAttacks));
+        printf("For copying BishopAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        
+        err = cudaMemcpyToSymbol(gQueenAttacks, QueenAttacks, sizeof(QueenAttacks));
+        printf("For copying QueenAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gKnightAttacks, KnightAttacks, sizeof(KnightAttacks));
+        printf("For copying KnightAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gKingAttacks, KingAttacks, sizeof(KingAttacks));
+        printf("For copying KingAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+#endif
+
     }
 
 
-    static uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
+    CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
     {
         // check for sliding attacks to the king's square
 
@@ -581,8 +690,10 @@ public:
         uint64 b = bishopAttacks(myKing, ~enemyPieces) & enemyBishops;
         uint64 r = rookAttacks  (myKing, ~enemyPieces) & enemyRooks;
         */
-        uint64 b = BishopAttacks[kingIndex] & enemyBishops;
-        uint64 r = RookAttacks  [kingIndex] & enemyRooks;
+
+        uint64 b = sqBishopAttacks(kingIndex) & enemyBishops;
+        uint64 r = sqRookAttacks  (kingIndex) & enemyRooks;
+
         uint64 attackers = b | r;
 
         // for every attacker we need to chess if there is a single obstruction between 
@@ -596,7 +707,7 @@ public:
             // figure out a way do find obstructions without having to get square index of attacker
             uint8 attackerIndex = bitScan(attacker);    // same as bitscan on attackers
 
-            uint64 squaresInBetween = Between[attackerIndex][kingIndex]; // same as using obstructed() function
+            uint64 squaresInBetween = sqsInBetween(attackerIndex, kingIndex); // same as using obstructed() function
             uint64 piecesInBetween = squaresInBetween & allPieces;
             if (isSingular(piecesInBetween))
                 pinned |= piecesInBetween;
@@ -610,7 +721,7 @@ public:
     // returns bitmask of squares in threat by enemy pieces
     // the king shouldn't ever attempt to move to a threatened square
     // TODO: maybe make this tempelated on color?
-    static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
                                       uint64 enemyPawns, uint64 enemyKnights, uint64 enemyKing, 
                                       uint64 myKing, uint8 enemyColor)
     {
@@ -649,7 +760,7 @@ public:
 
 
     // adds the given board to list and increments the move counter
-    __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
+    CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
     {
         **newPos = *newBoard;
         (*newPos)++;
@@ -657,7 +768,7 @@ public:
     }
 
 
-    __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
+    CUDA_CALLABLE_MEMBER __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
     {
 
 #if USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION == 1
@@ -689,7 +800,7 @@ public:
 #endif
     }
 
-    __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                              uint64 src, uint64 dst, uint8 chance)
     {
 
@@ -749,7 +860,7 @@ public:
     }
 
 
-    __forceinline static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -794,7 +905,7 @@ public:
     }
 
 
-    __forceinline static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                           uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -841,7 +952,7 @@ public:
     }
 
 
-    __forceinline static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 kingFrom, uint64 kingTo, uint64 rookFrom, uint64 rookTo, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -884,7 +995,7 @@ public:
 
     // only for normal moves
     // promotions and en-passent handled in seperate functions
-    __forceinline static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                                uint64 src, uint64 dst, uint8 chance, bool doublePush, uint8 pawnIndex)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -937,7 +1048,7 @@ public:
         addMove(nMoves, newPos, &newBoard);
     }
 
-    static void addEnPassentMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER static void addEnPassentMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                  uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -985,7 +1096,7 @@ public:
 
     // adds promotions if at promotion square
     // or normal pawn moves if not promotion. Never called for double pawn push (the above function is called directly)
-    __forceinline static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                            uint64 src, uint64 dst, uint8 chance)
     {
         // promotion
@@ -1061,7 +1172,7 @@ public:
 #if USE_TEMPLATE_CHANCE_OPT == 1
     template<uint8 chance, bool countOnly>
 #endif
-    __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
+    CUDA_CALLABLE_MEMBER __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
                                            uint8 kingIndex
@@ -1096,7 +1207,7 @@ public:
 
         // A. Try king moves to get the king out of check
 #if USE_KING_LUT == 1
-        uint64 kingMoves = KingAttacks[kingIndex];
+        uint64 kingMoves = sqKingAttacks(kingIndex);
 #else
         uint64 kingMoves = kingAttacks(king);
 #endif
@@ -1123,7 +1234,7 @@ public:
 
             // for pawn and knight attack, the only option is to kill the attacking piece
             // for bishops rooks and queens, it's the line between the attacker and the king, including the attacker
-            uint64 safeSquares = attackers | Between[kingIndex][bitScan(attackers)];
+            uint64 safeSquares = attackers | sqsInBetween(kingIndex, bitScan(attackers));
             
             // pieces that are pinned don't have any hope of saving the king
             // TODO: Think more about it
@@ -1163,7 +1274,13 @@ public:
                 {
                     if (dst & safeSquares)
                     {
-                        if (countOnly) nMoves++;
+                        if (countOnly) 
+                        {
+                            if (dst & (RANK1 | RANK8))
+                                nMoves += 4;    // promotion
+                            else
+                                nMoves++;
+                        }
                         else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
                     }
                     else
@@ -1186,7 +1303,13 @@ public:
                 dst = (westCapture | eastCapture) & enemyPieces & safeSquares;
                 if (dst) 
                 {
-                    if (countOnly) nMoves++;    
+                    if (countOnly) 
+                    {
+                        if (dst & (RANK1 | RANK8))
+                            nMoves += 4;    // promotion
+                        else
+                            nMoves++;
+                    }
                     else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
                 }
 
@@ -1207,7 +1330,7 @@ public:
             {
                 uint64 knight = getOne(myKnights);
 #if USE_KNIGHT_LUT == 1
-                uint64 knightMoves = KnightAttacks[bitScan(knight)] & safeSquares;
+                uint64 knightMoves = sqKnightAttacks(bitScan(knight)) & safeSquares;
 #else
                 uint64 knightMoves = knightAttacks(knight) & safeSquares;
 #endif
@@ -1277,18 +1400,15 @@ public:
     }
 
 
-    // TODO: have another function called countMoves... that only counts the no. of valid moves without generating them
-    // or maybe make it tempelated function ?
-
     // generates moves for the given board position
     // returns the no of moves generated
     // newPositions contains the new positions after making the generated moves
     // returns only count if newPositions is NULL
 #if USE_TEMPLATE_CHANCE_OPT == 1
     template <uint8 chance, bool countOnly>
-    static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
+    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
 #else
-    static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance, bool countOnly)
+    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance, bool countOnly)
 #endif
     {
         uint32 nMoves = 0;
@@ -1362,7 +1482,7 @@ public:
                 if (pawn & pinned)
                 {
                     // the direction of the pin (mask containing all squares in the line joining the king and the current piece)
-                    uint64 line = Line[bitScan(pawn)][kingIndex];
+                    uint64 line = sqsInLine(bitScan(pawn), kingIndex);
                     
                     if (enPassentTarget & line)
                     {
@@ -1370,7 +1490,10 @@ public:
                         else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance);
                     }
                 }
-                else
+                else 
+                /*if (!(enPassentCapturedPiece & pinned))*/   
+                // the captured pawn should not be pinned in diagonal direction but it can be in vertical dir.
+                // the diagonal pinning can't happen for enpassent in real chess game, so anyways it's not vaild
                 {
                     uint64 propogator = (~allPieces) | enPassentCapturedPiece | pawn;
                     uint64 causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
@@ -1399,7 +1522,7 @@ public:
             uint8 pawnIndex = bitScan(pawn);    // same as bitscan on pinnedPawns
 
             // the direction of the pin (mask containing all squares in the line joining the king and the current piece)
-            uint64 line = Line[pawnIndex][kingIndex];
+            uint64 line = sqsInLine(pawnIndex, kingIndex);
 
             // pawn push
             uint64 dst = ((chance == WHITE) ? northOne(pawn) : southOne(pawn)) & line & (~allPieces);
@@ -1532,6 +1655,7 @@ public:
             myPawns ^= pawn;
         }
 
+        // generate castling moves
         if (chance == WHITE)
         {
             if ((pos->whiteCastle & CASTLE_FLAG_KING_SIDE) &&   // castle flag is set
@@ -1573,7 +1697,7 @@ public:
         
         // generate king moves
 #if USE_KING_LUT == 1
-        uint64 kingMoves = KingAttacks[kingIndex];
+        uint64 kingMoves = sqKingAttacks(kingIndex);
 #else
         uint64 kingMoves = kingAttacks(myKing);
 #endif
@@ -1597,7 +1721,7 @@ public:
         {
             uint64 knight = getOne(myKnights);
 #if USE_KNIGHT_LUT == 1
-            uint64 knightMoves = KnightAttacks[bitScan(knight)] & ~myPieces;
+            uint64 knightMoves = sqKnightAttacks(bitScan(knight)) & ~myPieces;
 #else
             uint64 knightMoves = knightAttacks(knight) & ~myPieces;
 #endif
@@ -1627,7 +1751,7 @@ public:
             uint64 bishop = getOne(bishops);
             // TODO: bishopAttacks() function uses a kogge-stone sliding move generator. Switch to magics!
             uint64 bishopMoves = bishopAttacks(bishop, ~allPieces) & ~myPieces;
-            bishopMoves &= Line[bitScan(bishop)][kingIndex];    // pined sliding pieces can move only along the line
+            bishopMoves &= sqsInLine(bitScan(bishop), kingIndex);    // pined sliding pieces can move only along the line
 
             if (countOnly)
             {
@@ -1675,7 +1799,7 @@ public:
         {
             uint64 rook = getOne(rooks);
             uint64 rookMoves = rookAttacks(rook, ~allPieces) & ~myPieces;
-            rookMoves &= Line[bitScan(rook)][kingIndex];    // pined sliding pieces can move only along the line
+            rookMoves &= sqsInLine(bitScan(rook), kingIndex);    // pined sliding pieces can move only along the line
 
             if (countOnly)
             {
@@ -1725,3 +1849,144 @@ template uint32 MoveGeneratorBitboard::generateMoves<WHITE, false>(HexaBitBoardP
 template uint32 MoveGeneratorBitboard::generateMoves<BLACK, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
 template uint32 MoveGeneratorBitboard::generateMoves<WHITE, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
 #endif
+
+
+
+// perft counter function. Returns perft of the given board for given depth
+uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
+{
+    HexaBitBoardPosition newPositions[256];
+
+    /*
+    if (depth == 2)
+        printMoves = true;
+    else
+        printMoves = false;
+    */
+
+    uint32 nMoves = 0;
+    uint8 chance = pos->chance;
+
+    if (depth == 1)
+    {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+        if (chance == BLACK)
+        {
+            nMoves = MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, newPositions);
+        }
+        else
+        {
+            nMoves = MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, newPositions);
+        }
+#else
+        nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, true);
+#endif
+        return nMoves;
+    }
+
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (chance == BLACK)
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, newPositions);
+    }
+    else
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, newPositions);
+    }
+#else
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false);
+#endif
+
+    uint64 count = 0;
+
+    for (uint32 i=0; i < nMoves; i++)
+    {
+        uint64 childPerft = perft_bb(&newPositions[i], depth - 1);
+        /*if (depth == 2)
+            printf("%llu\n", childPerft);*/
+        count += childPerft;
+    }
+
+    return count;
+}
+
+#if TEST_GPU_PERFT == 1
+// perft search
+__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMoves, int depth)
+{
+    // exctact one element of work
+    HexaBitBoardPosition *pos = &(position[threadIdx.x]);
+    uint64 *moveCounter = &(generatedMoves[threadIdx.x]);
+    
+    uint32 nMoves;
+
+    uint8 color = pos->chance;
+
+    if (depth == 1)
+    {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+        if (color == BLACK)
+        {
+            nMoves = MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, NULL);
+        }
+        else
+        {
+            nMoves = MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, NULL);
+        }
+#else
+        nMoves = MoveGeneratorBitboard::generateMoves(pos, NULL, color, true);
+#endif
+        *moveCounter = nMoves;
+        return;
+    }
+
+    HexaBitBoardPosition *childBoards;
+    int hr;
+    hr = cudaMalloc(&childBoards, sizeof(HexaBitBoardPosition) * MAX_MOVES);
+    //if (hr != 0)
+    //    printf("error in malloc for childBoards at depth %d\n", depth);
+
+
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, childBoards);
+    }
+    else
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, childBoards);
+    }
+#else
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, childBoards, color, false);
+#endif
+
+    if (nMoves == 0)
+    {
+        *moveCounter = 0;
+    }
+    else
+    {
+        uint64 *child_perfts;
+        hr = cudaMalloc(&child_perfts, sizeof(uint64) * MAX_MOVES);
+        //if (hr != 0)
+        //    printf("error in sedond malloc at depth %d\n", depth);
+
+        cudaStream_t childStream;
+        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+       
+        perft_bb_gpu<<<1, nMoves, 0, childStream>>> (childBoards, child_perfts, depth-1);
+        cudaDeviceSynchronize();
+
+        uint64 childPerft = 0;
+        for (uint32 i = 0; i < nMoves; i++)
+        {
+            childPerft += child_perfts[i];
+        }
+        cudaStreamDestroy(childStream);
+        cudaFree(child_perfts);
+        *moveCounter = childPerft;
+    }
+    cudaFree(childBoards);
+
+}
+#endif // #if TEST_GPU_PERFT == 1
