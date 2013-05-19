@@ -2051,11 +2051,10 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMo
 #endif
 
 // perft search
-__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMoves, HexaBitBoardPosition *allChildBoards, uint64 *allChildPerfts, int depth)
+__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, HexaBitBoardPosition *allChildBoards, int depth)
 {
     // exctact one element of work
     HexaBitBoardPosition *pos = &(position[threadIdx.x]);
-    uint64 *moveCounter = &(generatedMoves[threadIdx.x]);
 
     uint32 nMoves;
 
@@ -2075,12 +2074,11 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMo
 #else
         nMoves = MoveGeneratorBitboard::generateMoves(pos, NULL, color, true);
 #endif
-        *moveCounter = nMoves;
+        atomicAdd(globalPerftCounter, nMoves);
         return;
     }
 
     HexaBitBoardPosition *childBoards = &allChildBoards[threadIdx.x * MAX_MOVES];
-    uint64               *childPerfts = &allChildPerfts[threadIdx.x * MAX_MOVES];
 
 
 #if USE_TEMPLATE_CHANCE_OPT == 1
@@ -2096,17 +2094,12 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMo
     nMoves = MoveGeneratorBitboard::generateMoves(pos, childBoards, color, false);
 #endif
 
-    if (nMoves == 0)
-    {
-        *moveCounter = 0;
-    }
-    else
+    if (nMoves != 0)
     {
         cudaStream_t childStream;
         cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
        
         HexaBitBoardPosition *childChildBoards = NULL;
-        uint64               *childChildPerfts = NULL;
         if (depth > 2)
         {
             // allocate memory for storing child boards of all childs
@@ -2114,26 +2107,14 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMo
             hr = cudaMalloc(&childChildBoards, sizeof(HexaBitBoardPosition) * MAX_MOVES * nMoves);
             //if (hr != 0)
             //    printf("error in malloc for childChildBoards at depth %d\n", depth);
-            hr = cudaMalloc(&childChildPerfts, sizeof(uint64) * MAX_MOVES * nMoves);
-            //if (hr != 0)
-            //    printf("error in malloc for childChildPerfts at depth %d\n", depth);
-
         }
-        perft_bb_gpu<<<1, nMoves, 0, childStream>>> (childBoards, childPerfts, childChildBoards, childChildPerfts, depth-1);
-        cudaDeviceSynchronize();
-
-        uint64 childPerft = 0;
-        for (uint32 i = 0; i < nMoves; i++)
-        {
-            childPerft += childPerfts[i];
-        }
+        perft_bb_gpu<<<1, nMoves, 0, childStream>>> (childBoards, globalPerftCounter, childChildBoards, depth-1);
         cudaStreamDestroy(childStream);
-        *moveCounter = childPerft;
 
         if (depth > 2)
         {
+            cudaDeviceSynchronize();
             cudaFree(childChildBoards);
-            cudaFree(childChildPerfts);
         }
     }
 }
