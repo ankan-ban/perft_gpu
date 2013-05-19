@@ -131,7 +131,7 @@ int main()
 
     uint64 bbMoves;
 
-    for (int depth=5;depth<6;depth++)
+    for (int depth=5;depth<7;depth++)
     {
         /*
         START_TIMER
@@ -144,14 +144,19 @@ int main()
         // try the same thing on GPU
         HexaBitBoardPosition *gpuBoard;
         uint64 *gpu_perft;
-        cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-        cudaMalloc(&gpu_perft, sizeof(uint64));
+        cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition) * (MAX_MOVES + 1));
+        cudaMalloc(&gpu_perft, sizeof(uint64) * (MAX_MOVES + 1));
         cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
         printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
 
+        // gpuBoard[0]            - the board to work on
+        // gpuBoard[1...MAXMOVES] - the child boards
+
+        // same with perfts
+
         EventTimer gputime;
         gputime.start();
-        perft_bb_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth);
+        perft_bb_gpu <<<1, 1, 0>>> (gpuBoard, gpu_perft, &gpuBoard[1], &gpu_perft[1], depth);
         gputime.stop();
         printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
 
