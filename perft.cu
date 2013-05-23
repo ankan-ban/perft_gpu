@@ -61,8 +61,8 @@ void initGPU()
     hr = cudaDeviceSetLimit(cudaLimitMallocHeapSize, 1*1024*1024*1024); // 1 GB
     printf("cudaDeviceSetLimit cudaLimitMallocHeapSize returned %d\n", hr);
 
-    /*
-    hr = cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 256);
+    /*    
+    hr = cudaDeviceSetLimit(cudaLimitDevRuntimePendingLaunchCount, 32);
     printf("cudaDeviceSetLimit cudaLimitDevRuntimePendingLaunchCount returned %d\n", hr);
 
     hr = cudaFuncSetCacheConfig(perft_bb_gpu, cudaFuncCachePreferL1);
@@ -92,7 +92,7 @@ int main()
     Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
 
     // No bug till depth 7!
-    // Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
+    //Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
 
     // no bug till depth 6
     //Utils::readFENString("r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1", &testBoard); // position 4
@@ -104,7 +104,7 @@ int main()
     // no bug till depth 7
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
 
-    //Utils::readFENString("rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6", &testBoard); // temp test
+    //Utils::readFENString("8/3K4/2p5/p2b2r1/5k2/8/8/1q6 b - 1 67", &testBoard); // temp test
 
 
     /*
@@ -131,7 +131,7 @@ int main()
 
     uint64 bbMoves;
 
-    for (int depth=5;depth<8;depth++)
+    for (int depth=1;depth<7;depth++)
     {
         /*
         START_TIMER
@@ -141,13 +141,19 @@ int main()
         printf("Time taken: %g seconds, nps: %llu\n", gTime/1000.0, (uint64) ((bbMoves/gTime)*1000.0));
         */
 #if TEST_GPU_PERFT == 1
+
+        int hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, depth-1);
+        if (hr != S_OK)
+            printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth returned %d\n", hr);
+
         // try the same thing on GPU
         HexaBitBoardPosition *gpuBoard;
         uint64 *gpu_perft;
         cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition) * (MAX_MOVES + 1));
         cudaMalloc(&gpu_perft, sizeof(uint64));
         cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
-        printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
+        if (hr != S_OK)
+            printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
 
         cudaMemset(gpu_perft, 0, sizeof(uint64));
 
@@ -158,9 +164,10 @@ int main()
 
         EventTimer gputime;
         gputime.start();
-        perft_bb_gpu <<<1, 1, 0>>> (gpuBoard, gpu_perft, &gpuBoard[1], depth);
+        perft_bb_gpu <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
         gputime.stop();
-        printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
+        if (cudaGetLastError() != S_OK)
+            printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
 
         cudaDeviceSynchronize();
 

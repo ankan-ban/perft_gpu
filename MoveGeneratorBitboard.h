@@ -79,7 +79,7 @@
 #define ALLSET    C64(0xFFFFFFFFFFFFFFFF)
 #define EMPTY     C64(0x0)
 
-CUDA_CALLABLE_MEMBER __forceinline uint8 popCount(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline__ uint8 popCount(uint64 x)
 {
 #ifdef __CUDA_ARCH__
     return __popcll(x);
@@ -110,7 +110,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint8 popCount(uint64 x)
 
 
 // return the index of first set LSB
-CUDA_CALLABLE_MEMBER __forceinline uint8 bitScan(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline__ uint8 bitScan(uint64 x)
 {
 #ifdef __CUDA_ARCH__
     // __ffsll(x) returns position from 1 to 64 instead of 0 to 63
@@ -170,7 +170,7 @@ __device__ static uint64 gKnightAttacks  [64];
 __device__ static uint64 gpawnAttacks[2] [64];
 #endif
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetween(uint8 sq1, uint8 sq2)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInBetween(uint8 sq1, uint8 sq2)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gBetween[sq1][sq2]);
@@ -179,7 +179,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetween(uint8 sq1, uint8 sq2)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLine(uint8 sq1, uint8 sq2)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInLine(uint8 sq1, uint8 sq2)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gLine[sq1][sq2]);
@@ -188,7 +188,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLine(uint8 sq1, uint8 sq2)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKnightAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gKnightAttacks[sq]);
@@ -197,7 +197,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKingAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gKingAttacks[sq]);
@@ -206,7 +206,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqRookAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gRookAttacks[sq]);
@@ -215,7 +215,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqBishopAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gBishopAttacks[sq]);
@@ -231,42 +231,42 @@ private:
 
     // move the bits in the bitboard one square in the required direction
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northOne(uint64 x)
     {
         return x << 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southOne(uint64 x)
     {
         return x >> 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastOne(uint64 x)
     {
         return (x << 1) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 westOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westOne(uint64 x)
     {
         return (x >> 1) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastOne(uint64 x)
     {
         return (x << 9) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestOne(uint64 x)
     {
         return (x << 7) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastOne(uint64 x)
     {
         return (x >> 7) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestOne(uint64 x)
     {
         return (x >> 9) & (~FILEH);
     }
@@ -281,7 +281,7 @@ private:
 
     // uses kogge-stone algorithm
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northFill(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -292,7 +292,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southFill(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -303,7 +303,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -316,7 +316,7 @@ private:
         return gen;
     }
     
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 westFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -330,7 +330,7 @@ private:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -343,7 +343,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -356,7 +356,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -369,7 +369,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -386,7 +386,7 @@ private:
     // attacks in the given direction
     // need to OR with ~(pieces of side to move) to avoid killing own pieces
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -397,7 +397,7 @@ private:
         return gen << 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -408,7 +408,7 @@ private:
         return gen >> 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -421,7 +421,7 @@ private:
         return (gen << 1) & (~FILEA);
     }
     
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 westAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -435,7 +435,7 @@ private:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -448,7 +448,7 @@ private:
         return (gen << 9) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -461,7 +461,7 @@ private:
         return (gen << 7) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -474,7 +474,7 @@ private:
         return (gen >> 7) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -491,7 +491,7 @@ private:
     // attacks by pieces of given type
     // pro - empty squares
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacks(uint64 bishops, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 bishopAttacks(uint64 bishops, uint64 pro)
     {
         return northEastAttacks(bishops, pro) |
                northWestAttacks(bishops, pro) |
@@ -499,7 +499,7 @@ private:
                southWestAttacks(bishops, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rooks, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 rookAttacks(uint64 rooks, uint64 pro)
     {
         return northAttacks(rooks, pro) |
                southAttacks(rooks, pro) |
@@ -507,13 +507,13 @@ private:
                westAttacks (rooks, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 queenAttacks(uint64 queens, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 queenAttacks(uint64 queens, uint64 pro)
     {
         return rookAttacks  (queens, pro) |
                bishopAttacks(queens, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 kingAttacks(uint64 kingSet) 
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 kingAttacks(uint64 kingSet) 
     {
         uint64 attacks = eastOne(kingSet) | westOne(kingSet);
         kingSet       |= attacks;
@@ -523,7 +523,7 @@ private:
 
     // efficient knight attack generator
     // http://chessprogramming.wikispaces.com/Knight+Pattern
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 knightAttacks(uint64 knights) {
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 knightAttacks(uint64 knights) {
         uint64 l1 = (knights >> 1) & C64(0x7f7f7f7f7f7f7f7f);
         uint64 l2 = (knights >> 2) & C64(0x3f3f3f3f3f3f3f3f);
         uint64 r1 = (knights << 1) & C64(0xfefefefefefefefe);
@@ -537,17 +537,17 @@ private:
 
     // gets one bit (the LSB) from a bitboard
     // returns a bitboard containing that bit
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 getOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 getOne(uint64 x)
     {
         return x & (-x);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static bool isMultiple(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static bool isMultiple(uint64 x)
     {
         return x ^ getOne(x);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static bool isSingular(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline__ static bool isSingular(uint64 x)
     {
         return !isMultiple(x); 
     }
@@ -559,7 +559,7 @@ public:
     // taken from 
     // http://chessprogramming.wikispaces.com/Square+Attacked+By#Legality Test-In Between-Pure Calculation
     // Ankan : TODO: this doesn't seem to work for G8 - B3
-    __forceinline static uint64 squaresInBetween(uint8 sq1, uint8 sq2)
+    __forceinline__ static uint64 squaresInBetween(uint8 sq1, uint8 sq2)
     {
         const uint64 m1   = C64(0xFFFFFFFFFFFFFFFF);
         const uint64 a2a7 = C64(0x0001010101010100);
@@ -579,7 +579,7 @@ public:
     }
 
     // returns the 'line' containing all pieces in the same file/rank/diagonal or anti-diagonal containing sq1 and sq2
-    __forceinline static uint64 squaresInLine(uint8 sq1, uint8 sq2)
+    __forceinline__ static uint64 squaresInLine(uint8 sq1, uint8 sq2)
     {
         // TODO: try to make it branchless?
         int fileDiff  =   (sq2 & 7) - (sq1 & 7);
@@ -680,7 +680,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
+    CUDA_CALLABLE_MEMBER static __forceinline__ uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
     {
         // check for sliding attacks to the king's square
 
@@ -721,7 +721,7 @@ public:
     // returns bitmask of squares in threat by enemy pieces
     // the king shouldn't ever attempt to move to a threatened square
     // TODO: maybe make this tempelated on color?
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
                                       uint64 enemyPawns, uint64 enemyKnights, uint64 enemyKing, 
                                       uint64 myKing, uint8 enemyColor)
     {
@@ -760,7 +760,7 @@ public:
 
 
     // adds the given board to list and increments the move counter
-    CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
     {
         **newPos = *newBoard;
         (*newPos)++;
@@ -768,7 +768,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
+    CUDA_CALLABLE_MEMBER __forceinline__ static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
     {
 
 #if USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION == 1
@@ -800,7 +800,7 @@ public:
 #endif
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                              uint64 src, uint64 dst, uint8 chance)
     {
 
@@ -860,7 +860,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -905,7 +905,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                           uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -952,7 +952,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 kingFrom, uint64 kingTo, uint64 rookFrom, uint64 rookTo, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -995,7 +995,7 @@ public:
 
     // only for normal moves
     // promotions and en-passent handled in seperate functions
-    CUDA_CALLABLE_MEMBER __forceinline static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                                uint64 src, uint64 dst, uint8 chance, bool doublePush, uint8 pawnIndex)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -1096,7 +1096,7 @@ public:
 
     // adds promotions if at promotion square
     // or normal pawn moves if not promotion. Never called for double pawn push (the above function is called directly)
-    CUDA_CALLABLE_MEMBER __forceinline static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline__ static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                            uint64 src, uint64 dst, uint8 chance)
     {
         // promotion
@@ -1172,7 +1172,7 @@ public:
 #if USE_TEMPLATE_CHANCE_OPT == 1
     template<uint8 chance, bool countOnly>
 #endif
-    CUDA_CALLABLE_MEMBER __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
+    CUDA_CALLABLE_MEMBER __forceinline__ static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
                                            uint8 kingIndex
@@ -2050,7 +2050,8 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *generatedMo
 }
 #endif
 
-// perft search
+#if 0
+// perft search (this version makes use of global atomics)
 __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, HexaBitBoardPosition *allChildBoards, int depth)
 {
     // exctact one element of work
@@ -2116,6 +2117,279 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
             cudaDeviceSynchronize();
             cudaFree(childChildBoards);
         }
+    }
+}
+#endif
+
+#define BLOCK_SIZE 128
+
+
+__device__ __forceinline__ uint32 countMoves(HexaBitBoardPosition *pos, uint8 color)
+{
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        return MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, NULL);
+    }
+    else
+    {
+        return MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, NULL);
+    }
+#else
+    return MoveGeneratorBitboard::generateMoves(pos, NULL, color, true);
+#endif
+}
+
+__device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8 color, HexaBitBoardPosition *childBoards)
+{
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        return MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, childBoards);
+    }
+    else
+    {
+        return MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, childBoards);
+    }
+#else
+    return MoveGeneratorBitboard::generateMoves(pos, childBoards, color, false);
+#endif
+}
+
+#if 0
+// this version works quite well (peaks at around 3.7 Billion moves per second for the good position)
+__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, HexaBitBoardPosition *allChildBoards, int depth, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+    HexaBitBoardPosition pos = position[index];
+
+    // shared memory structure containing moves generated by each thread in the thread block
+    __shared__ uint32 movesForThread[BLOCK_SIZE];
+
+    uint8 color = pos.chance;
+
+    // 1. first just count the moves (and store it in shared memory for each thread in block)
+    uint32 nMoves = 0;
+
+    if (index < nThreads)
+        nMoves = countMoves(&pos, color);
+
+/*
+    if (depth == 1 && nMoves > 0)
+    {
+        uint64 bb  = (pos->kings | pos->pawns | pos->knights | pos->rookQueens | pos->bishopQueens);
+        uint32 bb0 = (bb & 0xFFFFFFFF);
+        uint32 bb1 = (bb >> 32);
+        printf("\nBlock %d, thread %d, board: %X%X, moves: %d\n", blockIdx.x, threadIdx.x, bb0, bb1, nMoves);
+    }
+*/
+    movesForThread[threadIdx.x] = nMoves;
+
+    __syncthreads();
+
+    if (depth == 1)
+    {
+        //printf("\nBlockIdx %d, threadIdx %d, nMoves: %d\n", blockIdx.x, threadIdx.x, nMoves);
+        // perform reduction to sum up perfts in the thread block
+
+        // TODO: use reduction instead of this crap
+        if (threadIdx.x == 0)
+        {
+            for (uint32 i=1; i < blockDim.x; i++)
+                nMoves += movesForThread[i];
+        }
+
+        // the first thread of the thread block uses atomicAdd to update the global perft counter
+        if (threadIdx.x == 0)
+        {
+            //printf("\nBlockIdx %d, threadIdx %d adding %d moves to global counter\n", blockIdx.x, threadIdx.x, nMoves);
+            atomicAdd(globalPerftCounter, nMoves);
+        }
+
+        return;
+    }
+
+    // 2. perform scan (prefix sum) to figure out starting addresses of child boards
+
+    // TODO: replace this crap with parallel scan
+    uint32 allMoves = 0;
+    if (threadIdx.x == 0)
+    {
+        //printf ("\nscan result: \n");
+        for (uint32 i=0; i<blockDim.x; i++)
+        {
+            uint32 x = movesForThread[i];
+            movesForThread[i] = allMoves;
+            allMoves += x ;
+            //printf("%d ", allMoves);
+        }
+
+        //printf("\nAllmoves at depth %d is %d\n", depth, allMoves);
+    }
+
+
+    __syncthreads();
+
+    HexaBitBoardPosition *childBoards = &allChildBoards[blockIdx.x * BLOCK_SIZE * MAX_MOVES] + movesForThread[threadIdx.x];
+
+    // 3. generate the moves now
+    if (nMoves)
+    {
+        generateMoves(&pos, color, childBoards);
+    }
+    __syncthreads();
+
+    // 4. first thread of each thread block launches new work (for moves generated by all threads in the thread block)
+    if (threadIdx.x == 0 && allMoves != 0)
+    {
+        cudaStream_t childStream;
+        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+       
+        HexaBitBoardPosition *childChildBoards = NULL;
+        if (depth > 2)
+        {
+            // allocate memory for storing child boards of all childs
+            int hr;
+            hr = cudaMalloc(&childChildBoards, sizeof(HexaBitBoardPosition) * MAX_MOVES * allMoves);
+            if (hr != 0)
+                printf("error in malloc for childChildBoards at depth %d, for %d moves\n", depth, allMoves);
+        }
+
+        uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
+        //printf ("\nLaunching %d blocks\n", nBlocks);
+        perft_bb_gpu<<<nBlocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(uint32), childStream>>> (childBoards, globalPerftCounter, childChildBoards, depth-1, allMoves);
+
+        if (depth > 2)
+        {
+            cudaDeviceSynchronize();
+            cudaFree(childChildBoards);
+        }
+
+        cudaStreamDestroy(childStream);
+    }
+}
+#endif
+
+__device__ void scan(uint32 *sharedArray)
+{
+    
+}
+
+// this version avoids allocating MAX_MOVES boards (so childChildBoards is never allocated by parent)
+// speed reduces to ~2.9 Billion moves per second :-/
+__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int depth, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+    HexaBitBoardPosition pos = position[index];
+
+    // shared memory structure containing moves generated by each thread in the thread block
+    __shared__ uint32 movesForThread[BLOCK_SIZE];
+
+    uint8 color = pos.chance;
+
+    // 1. first just count the moves (and store it in shared memory for each thread in block)
+    uint32 nMoves = 0;
+
+    if (index < nThreads)
+        nMoves = countMoves(&pos, color);
+
+    movesForThread[threadIdx.x] = nMoves;
+
+    __syncthreads();
+
+    if (depth == 1)
+    {
+        // Traverse the reduction tree to sum up perfts in the thread block
+        for(int stride = BLOCK_SIZE / 2; stride > 0; stride = stride / 2)
+        {
+            if (threadIdx.x < stride)
+            {
+        	    movesForThread[threadIdx.x] += movesForThread[threadIdx.x + stride];
+            }
+    	    __syncthreads();      
+        }
+
+
+        // the first thread of the thread block uses atomicAdd to update the global perft counter
+        if (threadIdx.x == 0)
+        {
+            atomicAdd(globalPerftCounter, movesForThread[0]);
+        }
+
+        return;
+    }
+
+    // 2. perform scan (prefix sum) to figure out starting addresses of child boards
+
+    // TODO: replace this crap with parallel scan
+    uint32 allMoves = 0;
+    if (threadIdx.x == 0)
+    {
+        for (uint32 i=0; i<blockDim.x; i++)
+        {
+            uint32 x = movesForThread[i];
+            movesForThread[i] = allMoves;
+            allMoves += x ;
+        }
+    }
+
+
+    __syncthreads();
+
+
+    // first thread of the block allocates memory for childBoards for the entire thread block
+    uint32 moveListOffset = movesForThread[threadIdx.x];
+
+    HexaBitBoardPosition *childBoards;
+    if (threadIdx.x == 0 && allMoves > 0)
+    {
+        int hr;
+        hr = cudaMalloc(&childBoards, sizeof(HexaBitBoardPosition) * allMoves);
+        //if (hr != 0)
+        //    printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
+
+        movesForThread[0] = (uint32) childBoards;
+    }
+
+    __syncthreads();
+
+    //if (threadIdx.x > 31 && (threadIdx.x & 0x1f) == 0)
+    {
+        // first thread in the warp gets value from shared memory
+        childBoards = (HexaBitBoardPosition *) movesForThread[0];
+    }
+
+    // other threads in the warp copy from thread 0 of warp
+    //childBoards = (HexaBitBoardPosition *)   __shfl((int)childBoards, 0);
+
+    // address of starting of move list for the current thread
+    childBoards += moveListOffset;
+
+
+    // 3. generate the moves now
+    if (nMoves)
+    {
+        generateMoves(&pos, color, childBoards);
+    }
+
+    __syncthreads();
+
+    // 4. first thread of each thread block launches new work (for moves generated by all threads in the thread block)
+    if (threadIdx.x == 0 && allMoves > 0)
+    {
+        cudaStream_t childStream;
+        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+       
+        HexaBitBoardPosition *childChildBoards = NULL;
+
+        uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
+        perft_bb_gpu<<<nBlocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(uint32), childStream>>> (childBoards, globalPerftCounter, depth-1, allMoves);
+
+        cudaDeviceSynchronize();
+        cudaFree(childBoards);
+        cudaStreamDestroy(childStream);
     }
 }
 
