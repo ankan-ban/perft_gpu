@@ -23,6 +23,9 @@
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 1
 
+// use lookup tabls for figuring out squares in line and squares in between
+#define USE_IN_BETWEEN_LUT 1
+    
 // use lookup table for king moves
 #define USE_KING_LUT 1
 
@@ -79,7 +82,7 @@
 #define ALLSET    C64(0xFFFFFFFFFFFFFFFF)
 #define EMPTY     C64(0x0)
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint8 popCount(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline uint8 popCount(uint64 x)
 {
 #ifdef __CUDA_ARCH__
     return __popcll(x);
@@ -110,7 +113,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint8 popCount(uint64 x)
 
 
 // return the index of first set LSB
-CUDA_CALLABLE_MEMBER __forceinline__ uint8 bitScan(uint64 x)
+CUDA_CALLABLE_MEMBER __forceinline uint8 bitScan(uint64 x)
 {
 #ifdef __CUDA_ARCH__
     // __ffsll(x) returns position from 1 to 64 instead of 0 to 63
@@ -170,7 +173,7 @@ __device__ static uint64 gKnightAttacks  [64];
 __device__ static uint64 gpawnAttacks[2] [64];
 #endif
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInBetween(uint8 sq1, uint8 sq2)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetweenLUT(uint8 sq1, uint8 sq2)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gBetween[sq1][sq2]);
@@ -179,7 +182,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInBetween(uint8 sq1, uint8 sq2)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInLine(uint8 sq1, uint8 sq2)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLineLUT(uint8 sq1, uint8 sq2)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gLine[sq1][sq2]);
@@ -188,7 +191,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqsInLine(uint8 sq1, uint8 sq2)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKnightAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gKnightAttacks[sq]);
@@ -197,7 +200,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKnightAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKingAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gKingAttacks[sq]);
@@ -206,7 +209,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqKingAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqRookAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gRookAttacks[sq]);
@@ -215,7 +218,7 @@ CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqRookAttacks(uint8 sq)
 #endif
 }
 
-CUDA_CALLABLE_MEMBER __forceinline__ uint64 sqBishopAttacks(uint8 sq)
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
     return __ldg(&gBishopAttacks[sq]);
@@ -231,42 +234,42 @@ private:
 
     // move the bits in the bitboard one square in the required direction
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northOne(uint64 x)
     {
         return x << 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southOne(uint64 x)
     {
         return x >> 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastOne(uint64 x)
     {
         return (x << 1) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westOne(uint64 x)
     {
         return (x >> 1) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastOne(uint64 x)
     {
         return (x << 9) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestOne(uint64 x)
     {
         return (x << 7) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastOne(uint64 x)
     {
         return (x >> 7) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestOne(uint64 x)
     {
         return (x >> 9) & (~FILEH);
     }
@@ -281,7 +284,7 @@ private:
 
     // uses kogge-stone algorithm
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northFill(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -292,7 +295,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southFill(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -303,7 +306,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -316,7 +319,7 @@ private:
         return gen;
     }
     
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -330,7 +333,7 @@ private:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -343,7 +346,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -356,7 +359,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -369,7 +372,7 @@ private:
         return gen;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestFill(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestFill(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -386,7 +389,7 @@ private:
     // attacks in the given direction
     // need to OR with ~(pieces of side to move) to avoid killing own pieces
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen << 8) & pro;
         pro &= (pro << 8);
@@ -397,7 +400,7 @@ private:
         return gen << 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southAttacks(uint64 gen, uint64 pro)
     {
         gen |= (gen >> 8) & pro;
         pro &= (pro >> 8);
@@ -408,7 +411,7 @@ private:
         return gen >> 8;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 eastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 eastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -421,7 +424,7 @@ private:
         return (gen << 1) & (~FILEA);
     }
     
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 westAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 westAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -435,7 +438,7 @@ private:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -448,7 +451,7 @@ private:
         return (gen << 9) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 northWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 northWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -461,7 +464,7 @@ private:
         return (gen << 7) & (~FILEH);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southEastAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southEastAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEA;
 
@@ -474,7 +477,7 @@ private:
         return (gen >> 7) & (~FILEA);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 southWestAttacks(uint64 gen, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 southWestAttacks(uint64 gen, uint64 pro)
     {
         pro &= ~FILEH;
 
@@ -491,7 +494,7 @@ private:
     // attacks by pieces of given type
     // pro - empty squares
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 bishopAttacks(uint64 bishops, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacks(uint64 bishops, uint64 pro)
     {
         return northEastAttacks(bishops, pro) |
                northWestAttacks(bishops, pro) |
@@ -499,7 +502,7 @@ private:
                southWestAttacks(bishops, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 rookAttacks(uint64 rooks, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rooks, uint64 pro)
     {
         return northAttacks(rooks, pro) |
                southAttacks(rooks, pro) |
@@ -507,13 +510,13 @@ private:
                westAttacks (rooks, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 queenAttacks(uint64 queens, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 queenAttacks(uint64 queens, uint64 pro)
     {
         return rookAttacks  (queens, pro) |
                bishopAttacks(queens, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 kingAttacks(uint64 kingSet) 
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 kingAttacks(uint64 kingSet) 
     {
         uint64 attacks = eastOne(kingSet) | westOne(kingSet);
         kingSet       |= attacks;
@@ -523,7 +526,7 @@ private:
 
     // efficient knight attack generator
     // http://chessprogramming.wikispaces.com/Knight+Pattern
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 knightAttacks(uint64 knights) {
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 knightAttacks(uint64 knights) {
         uint64 l1 = (knights >> 1) & C64(0x7f7f7f7f7f7f7f7f);
         uint64 l2 = (knights >> 2) & C64(0x3f3f3f3f3f3f3f3f);
         uint64 r1 = (knights << 1) & C64(0xfefefefefefefefe);
@@ -537,17 +540,17 @@ private:
 
     // gets one bit (the LSB) from a bitboard
     // returns a bitboard containing that bit
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 getOne(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 getOne(uint64 x)
     {
         return x & (-x);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static bool isMultiple(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static bool isMultiple(uint64 x)
     {
         return x ^ getOne(x);
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static bool isSingular(uint64 x)
+    CUDA_CALLABLE_MEMBER __forceinline static bool isSingular(uint64 x)
     {
         return !isMultiple(x); 
     }
@@ -559,7 +562,7 @@ public:
     // taken from 
     // http://chessprogramming.wikispaces.com/Square+Attacked+By#Legality Test-In Between-Pure Calculation
     // Ankan : TODO: this doesn't seem to work for G8 - B3
-    __forceinline__ static uint64 squaresInBetween(uint8 sq1, uint8 sq2)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 squaresInBetween(uint8 sq1, uint8 sq2)
     {
         const uint64 m1   = C64(0xFFFFFFFFFFFFFFFF);
         const uint64 a2a7 = C64(0x0001010101010100);
@@ -579,7 +582,7 @@ public:
     }
 
     // returns the 'line' containing all pieces in the same file/rank/diagonal or anti-diagonal containing sq1 and sq2
-    __forceinline__ static uint64 squaresInLine(uint8 sq1, uint8 sq2)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 squaresInLine(uint8 sq1, uint8 sq2)
     {
         // TODO: try to make it branchless?
         int fileDiff  =   (sq2 & 7) - (sq1 & 7);
@@ -616,6 +619,26 @@ public:
         // squares not on same line
         return 0;
     }
+
+
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 sqsInBetween(uint8 sq1, uint8 sq2)
+    {
+#if USE_IN_BETWEEN_LUT == 1
+        return sqsInBetweenLUT(sq1, sq2);
+#else
+        return squaresInBetween(min(sq1, sq2), max(sq1, sq2));
+#endif
+    }
+
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 sqsInLine(uint8 sq1, uint8 sq2)
+    {
+#if USE_IN_BETWEEN_LUT == 1
+        return sqsInLineLUT(sq1, sq2);
+#else
+        return squaresInLine(sq1, sq2);
+#endif
+    }
+
 
     static void init()
     {
@@ -680,7 +703,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER static __forceinline__ uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
+    CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
     {
         // check for sliding attacks to the king's square
 
@@ -721,7 +744,7 @@ public:
     // returns bitmask of squares in threat by enemy pieces
     // the king shouldn't ever attempt to move to a threatened square
     // TODO: maybe make this tempelated on color?
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 findAttackedSquares(uint64 emptySquares, uint64 enemyBishops, uint64 enemyRooks, 
                                       uint64 enemyPawns, uint64 enemyKnights, uint64 enemyKing, 
                                       uint64 myKing, uint8 enemyColor)
     {
@@ -760,7 +783,7 @@ public:
 
 
     // adds the given board to list and increments the move counter
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
+    CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
     {
         **newPos = *newBoard;
         (*newPos)++;
@@ -768,7 +791,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
+    CUDA_CALLABLE_MEMBER __forceinline static void updateCastleFlag(HexaBitBoardPosition *pos, uint64 dst, uint8 chance)
     {
 
 #if USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION == 1
@@ -800,7 +823,7 @@ public:
 #endif
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                              uint64 src, uint64 dst, uint8 chance)
     {
 
@@ -860,7 +883,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -905,7 +928,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                           uint64 src, uint64 dst, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -952,7 +975,7 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                             uint64 kingFrom, uint64 kingTo, uint64 rookFrom, uint64 rookTo, uint8 chance)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -995,7 +1018,7 @@ public:
 
     // only for normal moves
     // promotions and en-passent handled in seperate functions
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                                uint64 src, uint64 dst, uint8 chance, bool doublePush, uint8 pawnIndex)
     {
 #if DEBUG_PRINT_MOVES == 1
@@ -1096,7 +1119,7 @@ public:
 
     // adds promotions if at promotion square
     // or normal pawn moves if not promotion. Never called for double pawn push (the above function is called directly)
-    CUDA_CALLABLE_MEMBER __forceinline__ static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
+    CUDA_CALLABLE_MEMBER __forceinline static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
                                            uint64 src, uint64 dst, uint8 chance)
     {
         // promotion
@@ -1172,7 +1195,7 @@ public:
 #if USE_TEMPLATE_CHANCE_OPT == 1
     template<uint8 chance, bool countOnly>
 #endif
-    CUDA_CALLABLE_MEMBER __forceinline__ static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
+    CUDA_CALLABLE_MEMBER __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
                                            uint8 kingIndex
@@ -1855,7 +1878,7 @@ template uint32 MoveGeneratorBitboard::generateMoves<WHITE, true>(HexaBitBoardPo
 // perft counter function. Returns perft of the given board for given depth
 uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 {
-    HexaBitBoardPosition newPositions[256];
+    HexaBitBoardPosition newPositions[MAX_MOVES];
 
     /*
     if (depth == 2)
@@ -2121,7 +2144,7 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
 }
 #endif
 
-#define BLOCK_SIZE 128
+#define BLOCK_SIZE 256
 
 
 __device__ __forceinline__ uint32 countMoves(HexaBitBoardPosition *pos, uint8 color)
@@ -2271,13 +2294,30 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
 }
 #endif
 
-__device__ void scan(uint32 *sharedArray)
+__device__ __forceinline__ void scan(uint32 *sharedArray)
 {
-    
+    uint32 diff = 1;
+    while(diff < blockDim.x)
+    {
+        uint32 val1, val2;
+        
+        if (threadIdx.x >= diff)
+        {
+            val1 = sharedArray[threadIdx.x];
+            val2 = sharedArray[threadIdx.x - diff];
+        }
+        __syncthreads();
+        if (threadIdx.x >= diff)
+        {
+            sharedArray[threadIdx.x] = val1 + val2;
+        }
+        diff *= 2;
+        __syncthreads();
+    }
 }
 
 // this version avoids allocating MAX_MOVES boards (so childChildBoards is never allocated by parent)
-// speed reduces to ~2.9 Billion moves per second :-/
+// speed ~9.4 billion moves per second in best case
 __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int depth, int nThreads)
 {
     // exctact one element of work
@@ -2322,35 +2362,26 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
     }
 
     // 2. perform scan (prefix sum) to figure out starting addresses of child boards
-
-    // TODO: replace this crap with parallel scan
-    uint32 allMoves = 0;
-    if (threadIdx.x == 0)
-    {
-        for (uint32 i=0; i<blockDim.x; i++)
-        {
-            uint32 x = movesForThread[i];
-            movesForThread[i] = allMoves;
-            allMoves += x ;
-        }
-    }
-
-
-    __syncthreads();
-
+    scan(movesForThread);
+    
 
     // first thread of the block allocates memory for childBoards for the entire thread block
-    uint32 moveListOffset = movesForThread[threadIdx.x];
+    uint32 moveListOffset = movesForThread[threadIdx.x] - nMoves;
 
+    uint32 allMoves = 0;
     HexaBitBoardPosition *childBoards;
-    if (threadIdx.x == 0 && allMoves > 0)
+    if (threadIdx.x == 0)
     {
-        int hr;
-        hr = cudaMalloc(&childBoards, sizeof(HexaBitBoardPosition) * allMoves);
-        //if (hr != 0)
-        //    printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
+        allMoves = movesForThread[blockDim.x - 1];
+        if (allMoves)
+        {
+            int hr;
+            hr = cudaMalloc(&childBoards, sizeof(HexaBitBoardPosition) * allMoves);
+            //if (hr != 0)
+            //    printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
 
-        movesForThread[0] = (uint32) childBoards;
+            movesForThread[0] = (uint32) childBoards;
+        }
     }
 
     __syncthreads();
