@@ -8,9 +8,30 @@
 #endif
 
 // use trove library coalesced_ptr (that makes use of SHFL instruction) to optimize AOS reads
+// reduces performance by a small amount :-/
 #define USE_TROVE_AOS_OPT 0
 #if USE_TROVE_AOS_OPT == 1
 #include <trove/ptr.h>
+#endif
+
+// use scatterAlloc library for fast malloc/free
+// no difference in performance at all!
+#define USE_SCATTER_ALLOC 0
+#if USE_SCATTER_ALLOC == 1
+#include <cuda.h>
+typedef unsigned int uint;
+#include "tools/heap_impl.cuh"
+#include "tools/utils.h"
+//replace the cuda malloc and free calls
+#define OVERWRITE_MALLOC
+//set the template arguments using HEAPARGS
+// pagesize ... byter per page
+// accessblocks ... number of superblocks
+// regionsize ... number of regions for meta data structur
+// wastefactor ... how much memory can be wasted per alloc (multiplicative factor)
+// use_coalescing ... combine memory requests of within each warp
+// resetfreedpages ... allow pages to be reused with a different size
+#define HEAPARGS 4096, 8, 16, 2, false, false
 #endif
 
 // only count moves at leaves (instead of generating/making them)
@@ -788,11 +809,36 @@ public:
 
 
     // adds the given board to list and increments the move counter
-    CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
+    CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard, uint8 depth)
     {
-        **newPos = *newBoard;
-        (*newPos)++;
-        (*nMoves)++;
+        if (depth == 1)
+        {
+            **newPos = *newBoard;
+            (*newPos)++;
+            (*nMoves)++;
+        }
+        else if (depth == 2)
+        {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+            if (newBoard->chance == WHITE)
+                (*nMoves) += generateMoves<WHITE, true, false>(newBoard, NULL, 1);
+            else
+                (*nMoves) += generateMoves<BLACK, true, false>(newBoard, NULL, 1);
+#else
+            (*nMoves) += generateMoves(newBoard, NULL, newBoard->chance, true, false, 1);
+#endif
+        }
+        else
+        {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+            if (newBoard->chance == WHITE)
+                (*nMoves) += generateMoves<WHITE, false, true>(newBoard, NULL, depth - 1);
+            else
+                (*nMoves) += generateMoves<BLACK, false, true>(newBoard, NULL, depth - 1);
+#else
+            (*nMoves) += generateMoves(newBoard, NULL, newBoard->chance, false, true, depth - 1);
+#endif
+        }
     }
 
 
@@ -829,7 +875,7 @@ public:
     }
 
     CUDA_CALLABLE_MEMBER __forceinline static void addSlidingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                             uint64 src, uint64 dst, uint8 chance)
+                                             uint64 src, uint64 dst, uint8 chance, uint8 depth)
     {
 
 #if DEBUG_PRINT_MOVES == 1
@@ -884,12 +930,12 @@ public:
         updateCastleFlag(&newBoard, src, !chance);
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
     }
 
 
     CUDA_CALLABLE_MEMBER __forceinline static void addKnightMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                            uint64 src, uint64 dst, uint8 chance)
+                                            uint64 src, uint64 dst, uint8 chance, uint8 depth)
     {
 #if DEBUG_PRINT_MOVES == 1
         if (printMoves)
@@ -929,12 +975,12 @@ public:
         updateCastleFlag(&newBoard, dst, chance);
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
     }
 
 
     CUDA_CALLABLE_MEMBER __forceinline static void addKingMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                          uint64 src, uint64 dst, uint8 chance)
+                                          uint64 src, uint64 dst, uint8 chance, uint8 depth)
     {
 #if DEBUG_PRINT_MOVES == 1
         if (printMoves)
@@ -976,12 +1022,12 @@ public:
         updateCastleFlag(&newBoard, dst, chance);
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
     }
 
 
     CUDA_CALLABLE_MEMBER __forceinline static void addCastleMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                            uint64 kingFrom, uint64 kingTo, uint64 rookFrom, uint64 rookTo, uint8 chance)
+                                            uint64 kingFrom, uint64 kingTo, uint64 rookFrom, uint64 rookTo, uint8 chance, uint8 depth)
     {
 #if DEBUG_PRINT_MOVES == 1
         if (printMoves)
@@ -1016,7 +1062,7 @@ public:
         }
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
 
     }
 
@@ -1024,7 +1070,7 @@ public:
     // only for normal moves
     // promotions and en-passent handled in seperate functions
     CUDA_CALLABLE_MEMBER __forceinline static void addSinglePawnMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                               uint64 src, uint64 dst, uint8 chance, bool doublePush, uint8 pawnIndex)
+                                               uint64 src, uint64 dst, uint8 chance, bool doublePush, uint8 pawnIndex, uint8 depth)
     {
 #if DEBUG_PRINT_MOVES == 1
         if (printMoves)
@@ -1073,11 +1119,11 @@ public:
         newBoard.halfMoveCounter = 0;   // reset half move counter for pawn push
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
     }
 
     CUDA_CALLABLE_MEMBER static void addEnPassentMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                 uint64 src, uint64 dst, uint8 chance)
+                                 uint64 src, uint64 dst, uint8 chance, uint8 depth)
     {
 #if DEBUG_PRINT_MOVES == 1
         if (printMoves)
@@ -1119,13 +1165,13 @@ public:
         // no need to update castle flag for en-passent
 
         // add the move
-        addMove(nMoves, newPos, &newBoard);
+        addMove(nMoves, newPos, &newBoard, depth);
     }
 
     // adds promotions if at promotion square
     // or normal pawn moves if not promotion. Never called for double pawn push (the above function is called directly)
     CUDA_CALLABLE_MEMBER __forceinline static void addPawnMoves(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *pos,
-                                           uint64 src, uint64 dst, uint8 chance)
+                                           uint64 src, uint64 dst, uint8 chance, uint8 depth)
     {
         // promotion
         if (dst & (RANK1 | RANK8))
@@ -1173,40 +1219,41 @@ public:
             newBoard.knights      = pos->knights      | dst;
             newBoard.bishopQueens = pos->bishopQueens & ~dst;
             newBoard.rookQueens   = pos->rookQueens   & ~dst;
-            addMove(nMoves, newPos, &newBoard);
+            addMove(nMoves, newPos, &newBoard, depth);
 
             // 2. promotion to bishop
             newBoard.knights      = pos->knights      & ~dst;
             newBoard.bishopQueens = pos->bishopQueens | dst;
             newBoard.rookQueens   = pos->rookQueens   & ~dst;
-            addMove(nMoves, newPos, &newBoard);
+            addMove(nMoves, newPos, &newBoard, depth);
 
             // 3. promotion to queen
             newBoard.rookQueens   = pos->rookQueens   | dst;
-            addMove(nMoves, newPos, &newBoard);
+            addMove(nMoves, newPos, &newBoard, depth);
 
             // 4. promotion to rook
             newBoard.bishopQueens = pos->bishopQueens & ~dst;
-            addMove(nMoves, newPos, &newBoard);            
+            addMove(nMoves, newPos, &newBoard, depth);            
 
         }
         else
         {
             // pawn index is used only for double-pushes (to set en-passent square)
-            addSinglePawnMove(nMoves, newPos, pos, src, dst, chance, false, 0);
+            addSinglePawnMove(nMoves, newPos, pos, src, dst, chance, false, 0, depth);
         }
     }
 
 #if USE_TEMPLATE_CHANCE_OPT == 1
-    template<uint8 chance, bool countOnly>
+    template<uint8 chance, bool countOnly, bool recurse>
 #endif
     CUDA_CALLABLE_MEMBER __forceinline static uint32 generateMovesOutOfCheck (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
                                            uint64 enemyPieces, uint64 pinned, uint64 threatened, 
                                            uint8 kingIndex
 #if USE_TEMPLATE_CHANCE_OPT != 1
-                                           , uint8 chance, bool countOnly
+                                           , uint8 chance, bool countOnly, bool recurse
 #endif
+                                           , uint8 depth
                                            )
     {
         uint32 nMoves = 0;
@@ -1249,7 +1296,7 @@ public:
         while(kingMoves)
         {
             uint64 dst = getOne(kingMoves);
-            addKingMove(&nMoves, &newPositions, pos, king, dst, chance);            
+            addKingMove(&nMoves, &newPositions, pos, king, dst, chance, depth);
             kingMoves ^= dst;
         }
 
@@ -1309,7 +1356,7 @@ public:
                             else
                                 nMoves++;
                         }
-                        else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                        else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
                     }
                     else
                     {
@@ -1320,7 +1367,7 @@ public:
                         if (dst) 
                         {
                             if (countOnly) nMoves++;
-                            else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn));
+                            else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn), depth);
                         }
                     }
                 }
@@ -1338,7 +1385,7 @@ public:
                         else
                             nMoves++;
                     }
-                    else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                    else addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
                 }
 
                 // en-passent 
@@ -1346,7 +1393,7 @@ public:
                 if (dst) 
                 {
                     if (countOnly) nMoves++;
-                    else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                    else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
                 }
 
                 myPawns ^= pawn;
@@ -1370,7 +1417,7 @@ public:
                 while (knightMoves)
                 {
                     uint64 dst = getOne(knightMoves);
-                    addKnightMove(&nMoves, &newPositions, pos, knight, dst, chance);            
+                    addKnightMove(&nMoves, &newPositions, pos, knight, dst, chance, depth);
                     knightMoves ^= dst;
                 }
                 myKnights ^= knight;
@@ -1391,7 +1438,7 @@ public:
                 while (bishopMoves)
                 {
                     uint64 dst = getOne(bishopMoves);
-                    addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance);            
+                    addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance, depth);
                     bishopMoves ^= dst;
                 }
                 bishops ^= bishop;
@@ -1412,7 +1459,7 @@ public:
                 while (rookMoves)
                 {
                     uint64 dst = getOne(rookMoves);
-                    addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance);            
+                    addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance, depth);
                     rookMoves ^= dst;
                 }
                 rooks ^= rook;
@@ -1433,19 +1480,16 @@ public:
     // newPositions contains the new positions after making the generated moves
     // returns only count if newPositions is NULL
 #if USE_TEMPLATE_CHANCE_OPT == 1
-    template <uint8 chance, bool countOnly>
-    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions)
+    template <uint8 chance, bool countOnly, bool recurse>
+    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 depth)
 #else
-    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance, bool countOnly)
+    CUDA_CALLABLE_MEMBER static uint32 generateMoves (HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions, uint8 chance, bool countOnly, bool recurse, uint8 depth)
 #endif
     {
+        if (!recurse)
+            depth = 1;
+
         uint32 nMoves = 0;
-
-        //uint8 chance = pos->chance;
-
-        // TODO: implement fast path for count only
-        // might be better to do it either in a seperate function.. or make this function templated on countOnly
-        // bool countOnly = (newPositions == NULL);
 
         uint64 allPawns     = pos->pawns & RANKS2TO7;    // get rid of game state variables
 
@@ -1473,11 +1517,11 @@ public:
         if (threatened & (pos->kings & myPieces))
         {
 #if USE_TEMPLATE_CHANCE_OPT == 1
-            return generateMovesOutOfCheck<chance, countOnly>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
-                                                              pinned, threatened, kingIndex);
+            return generateMovesOutOfCheck<chance, countOnly, recurse>(pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
+                                                                       pinned, threatened, kingIndex, depth);
 #else
             return generateMovesOutOfCheck (pos, newPositions, allPawns, allPieces, myPieces, enemyPieces, 
-                                            pinned, threatened, kingIndex, chance, countOnly);
+                                            pinned, threatened, kingIndex, chance, countOnly, recurse, depth);
 #endif
         }
 
@@ -1515,7 +1559,7 @@ public:
                     if (enPassentTarget & line)
                     {
                         if (countOnly) nMoves++;
-                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance);
+                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance, depth);
                     }
                 }
                 else 
@@ -1529,7 +1573,7 @@ public:
                     if (!causesCheck)
                     {
                         if (countOnly) nMoves++;
-                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance);
+                        else addEnPassentMove(&nMoves, &newPositions, pos, pawn, enPassentTarget, chance, depth);
                     }
                 }
                 epSources ^= pawn;
@@ -1557,7 +1601,7 @@ public:
             if (dst) 
             {
                 if (countOnly) nMoves++;
-                else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, false, pawnIndex);
+                else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, false, pawnIndex, depth);
 
                 // double push (only possible if single push was possible)
                 dst = ((chance == WHITE) ? northOne(dst & checkingRankDoublePush): 
@@ -1565,7 +1609,7 @@ public:
                 if (dst) 
                 {
                     if (countOnly) nMoves++;
-                    else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, pawnIndex);
+                    else addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, pawnIndex, depth);
                 }
             }
 
@@ -1584,7 +1628,7 @@ public:
                 }
                 else 
                 {
-                    addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                    addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
                 }
             }
 
@@ -1597,7 +1641,7 @@ public:
             if (dst & enPassentTarget)
             {
                 if (countOnly) nMoves++;
-                else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                else addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
             }
 #endif
             
@@ -1642,23 +1686,23 @@ public:
             uint64 dst = ((chance == WHITE) ? northOne(pawn) : southOne(pawn)) & (~allPieces);
             if (dst) 
             {
-                addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+                addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
 
                 // double push (only possible if single push was possible)
                 dst = ((chance == WHITE) ? northOne(dst & checkingRankDoublePush): 
                                            southOne(dst & checkingRankDoublePush) ) & (~allPieces);
 
-                if (dst) addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn));
+                if (dst) addSinglePawnMove(&nMoves, &newPositions, pos, pawn, dst, chance, true, bitScan(pawn), depth);
             }
 
             // captures
             uint64 westCapture = (chance == WHITE) ? northWestOne(pawn) : southWestOne(pawn);
             dst = westCapture & enemyPieces;
-            if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+            if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
 
             uint64 eastCapture = (chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn);
             dst = eastCapture & enemyPieces;
-            if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
+            if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
 
             // en-passent 
             // there can be only a single en-passent capture per pawn
@@ -1675,7 +1719,7 @@ public:
                                      (pos->kings & myPieces);
                 if (!causesCheck)
                 {
-                    addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
+                    addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance, depth);
                 }
             }
 #endif
@@ -1692,7 +1736,7 @@ public:
             {
                 // white king side castle
                 if (countOnly) nMoves++;
-                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance);
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(G1), BIT(H1), BIT(F1), chance, depth);
             }
             if ((pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
                 !(B1D1 & allPieces) &&                          // squares between king and rook are empty
@@ -1700,7 +1744,7 @@ public:
             {
                 // white queen side castle
                 if (countOnly) nMoves++;
-                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(C1), BIT(A1), BIT(D1), chance);
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E1), BIT(C1), BIT(A1), BIT(D1), chance, depth);
             }
         }
         else
@@ -1711,7 +1755,7 @@ public:
             {
                 // black king side castle
                 if (countOnly) nMoves++;
-                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance);
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(G8), BIT(H8), BIT(F8), chance, depth);
             }
             if ((pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE) &&  // castle flag is set
                 !(B8D8 & allPieces) &&                          // squares between king and rook are empty
@@ -1719,7 +1763,7 @@ public:
             {
                 // black queen side castle
                 if (countOnly) nMoves++;
-                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(C8), BIT(A8), BIT(D8), chance);
+                else addCastleMove(&nMoves, &newPositions, pos, BIT(E8), BIT(C8), BIT(A8), BIT(D8), chance, depth);
             }
         }
         
@@ -1739,7 +1783,7 @@ public:
         while(kingMoves)
         {
             uint64 dst = getOne(kingMoves);
-            addKingMove(&nMoves, &newPositions, pos, myKing, dst, chance);            
+            addKingMove(&nMoves, &newPositions, pos, myKing, dst, chance, depth);
             kingMoves ^= dst;
         }
 
@@ -1761,7 +1805,7 @@ public:
             while (knightMoves)
             {
                 uint64 dst = getOne(knightMoves);
-                addKnightMove(&nMoves, &newPositions, pos, knight, dst, chance);            
+                addKnightMove(&nMoves, &newPositions, pos, knight, dst, chance, depth);
                 knightMoves ^= dst;
             }
             myKnights ^= knight;
@@ -1789,7 +1833,7 @@ public:
             while (bishopMoves)
             {
                 uint64 dst = getOne(bishopMoves);
-                addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance);            
+                addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance, depth);
                 bishopMoves ^= dst;
             }
             bishops ^= bishop;
@@ -1810,7 +1854,7 @@ public:
             while (bishopMoves)
             {
                 uint64 dst = getOne(bishopMoves);
-                addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance);            
+                addSlidingMove(&nMoves, &newPositions, pos, bishop, dst, chance, depth);
                 bishopMoves ^= dst;
             }
             bishops ^= bishop;
@@ -1837,7 +1881,7 @@ public:
             while (rookMoves)
             {
                 uint64 dst = getOne(rookMoves);
-                addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance);            
+                addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance, depth);
                 rookMoves ^= dst;
             }
             rooks ^= rook;
@@ -1858,7 +1902,7 @@ public:
             while (rookMoves)
             {
                 uint64 dst = getOne(rookMoves);
-                addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance);            
+                addSlidingMove(&nMoves, &newPositions, pos, rook, dst, chance, depth);
                 rookMoves ^= dst;
             }
             rooks ^= rook;
@@ -1870,29 +1914,10 @@ public:
     }    
 };
 
-#if USE_TEMPLATE_CHANCE_OPT == 1
-// instances of move generator
-template uint32 MoveGeneratorBitboard::generateMoves<BLACK, false>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
-template uint32 MoveGeneratorBitboard::generateMoves<WHITE, false>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
-template uint32 MoveGeneratorBitboard::generateMoves<BLACK, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
-template uint32 MoveGeneratorBitboard::generateMoves<WHITE, true>(HexaBitBoardPosition *pos, HexaBitBoardPosition *newPositions);
-#endif
 
-
-
-// perft counter function. Returns perft of the given board for given depth
+#if USE_SERIAL_RECURSIVE_MOVE_GEN == 1
 uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 {
-    HexaBitBoardPosition newPositions[MAX_MOVES];
-
-    /*
-    if (depth == 2)
-        printMoves = true;
-    else
-        printMoves = false;
-    */
-
-    uint32 nMoves = 0;
     uint8 chance = pos->chance;
 
     if (depth == 1)
@@ -1900,14 +1925,62 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_TEMPLATE_CHANCE_OPT == 1
         if (chance == BLACK)
         {
-            nMoves = MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, newPositions);
+            return MoveGeneratorBitboard::generateMoves<BLACK, true, true>(pos, NULL, depth);
         }
         else
         {
-            nMoves = MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, newPositions);
+            return MoveGeneratorBitboard::generateMoves<WHITE, true, true>(pos, NULL, depth);
         }
 #else
-        nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, true);
+        return MoveGeneratorBitboard::generateMoves(pos, NULL, chance, USE_COUNT_ONLY_OPT, true, depth);
+#endif
+    }
+    else
+    {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+        if (chance == BLACK)
+        {
+            return MoveGeneratorBitboard::generateMoves<BLACK, false, true>(pos, NULL, depth);
+        }
+        else
+        {
+            return MoveGeneratorBitboard::generateMoves<WHITE, false, true>(pos, NULL, depth);
+        }
+#else
+        return MoveGeneratorBitboard::generateMoves(pos, NULL, chance, false, true, depth);
+#endif
+    }
+}
+#else
+
+// perft counter function. Returns perft of the given board for given depth
+uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
+{
+    HexaBitBoardPosition newPositions[256];
+
+#if DEBUG_PRINT_MOVES == 1
+    if (depth == DEBUG_PRINT_DEPTH)
+        printMoves = true;
+    else
+        printMoves = false;
+#endif    
+
+    uint32 nMoves = 0;
+    uint8 chance = pos->chance;
+
+    if (depth == 1)
+    {
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (chance == BLACK)
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, USE_COUNT_ONLY_OPT, false>(pos, newPositions, 1);
+    }
+    else
+    {
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, USE_COUNT_ONLY_OPT, false>(pos, newPositions, 1);
+    }
+#else
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, USE_COUNT_ONLY_OPT, false, 1);
 #endif
         return nMoves;
     }
@@ -1915,14 +1988,14 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (chance == BLACK)
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, newPositions);
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false, false>(pos, newPositions, 1);
     }
     else
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, newPositions);
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false, false>(pos, newPositions, 1);
     }
 #else
-    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false);
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false, false, depth);
 #endif
 
     uint64 count = 0;
@@ -1930,13 +2003,16 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
     for (uint32 i=0; i < nMoves; i++)
     {
         uint64 childPerft = perft_bb(&newPositions[i], depth - 1);
-        /*if (depth == 2)
-            printf("%llu\n", childPerft);*/
+#if DEBUG_PRINT_MOVES == 1
+        if (depth == DEBUG_PRINT_DEPTH)
+            printf("%llu\n", childPerft);
+#endif
         count += childPerft;
     }
 
     return count;
 }
+#endif
 
 #if TEST_GPU_PERFT == 1
 
@@ -1948,14 +2024,30 @@ __device__ __forceinline__ uint32 countMoves(HexaBitBoardPosition *pos, uint8 co
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (color == BLACK)
     {
-        return MoveGeneratorBitboard::generateMoves<BLACK, true>(pos, NULL);
+        return MoveGeneratorBitboard::generateMoves<BLACK, true, false>(pos, NULL, 1);
     }
     else
     {
-        return MoveGeneratorBitboard::generateMoves<WHITE, true>(pos, NULL);
+        return MoveGeneratorBitboard::generateMoves<WHITE, true, false>(pos, NULL, 1);
     }
 #else
-    return MoveGeneratorBitboard::generateMoves(pos, NULL, color, true);
+    return MoveGeneratorBitboard::generateMoves(pos, NULL, color, true, false, 1);
+#endif
+}
+
+__device__ __forceinline__ uint32 countMovesRecursive(HexaBitBoardPosition *pos, uint8 color, uint8 depth)
+{
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        return MoveGeneratorBitboard::generateMoves<BLACK, false, true>(pos, NULL, depth);
+    }
+    else
+    {
+        return MoveGeneratorBitboard::generateMoves<WHITE, false, true>(pos, NULL, depth);
+    }
+#else
+    return MoveGeneratorBitboard::generateMoves(pos, NULL, color, false, true, depth);
 #endif
 }
 
@@ -1964,14 +2056,14 @@ __device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (color == BLACK)
     {
-        return MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, childBoards);
+        return MoveGeneratorBitboard::generateMoves<BLACK, false, false>(pos, childBoards, 1);
     }
     else
     {
-        return MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, childBoards);
+        return MoveGeneratorBitboard::generateMoves<WHITE, false, false>(pos, childBoards, 1);
     }
 #else
-    return MoveGeneratorBitboard::generateMoves(pos, childBoards, color, false);
+    return MoveGeneratorBitboard::generateMoves(pos, childBoards, color, false, false, 1);
 #endif
 }
 
@@ -2107,10 +2199,46 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
 }
 #endif
 
+
+__global__ void perft_bb_gpu_single_level(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int nThreads)
+{
+
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+#if USE_TROVE_AOS_OPT == 1
+    trove::coalesced_ptr<HexaBitBoardPosition> p(position);
+    HexaBitBoardPosition pos = p[index];
+#else
+    HexaBitBoardPosition pos = position[index];
+#endif
+
+    uint8 color = pos.chance;
+
+    // 1. first just count the moves (and store it in shared memory for each thread in block)
+    int nMoves = 0;
+
+    if (index < nThreads)
+        nMoves = countMoves(&pos, color);
+
+    // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
+    // wrap-wide reduction seems a little bit faster
+    wrapReduce(nMoves);
+
+    int laneId = threadIdx.x & 0x1f;
+
+    if (laneId == 0)
+    {
+        atomicAdd (globalPerftCounter, nMoves);
+    }
+    return;
+}
+
 // this version avoids allocating MAX_MOVES boards (so childChildBoards is never allocated by parent)
 // speed ~10 billion moves per second in best case
 __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int depth, int nThreads)
 {
+
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -2132,6 +2260,7 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
     if (index < nThreads)
         nMoves = countMoves(&pos, color);
 
+/*
     if (depth == 1)
     {
         // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
@@ -2146,7 +2275,7 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
         }
         return;
     }
-
+*/
     shMem.movesForThread[threadIdx.x] = nMoves;
     __syncthreads();
 
@@ -2164,9 +2293,13 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
         if (allMoves)
         {
             int hr;
+#if USE_SCATTER_ALLOC == 1
+            shMem.allChildBoards = new HexaBitBoardPosition[allMoves];
+#else
             hr = cudaMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
             //if (hr != 0)
             //    printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
+#endif
         }
     }
 
@@ -2174,8 +2307,12 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
 
     // other threads get value from shared memory
     // address of starting of move list for the current thread
+#if USE_TROVE_AOS_OPT == 1
+    trove::coalesced_ptr<HexaBitBoardPosition> p2(shMem.allChildBoards + moveListOffset);
+    HexaBitBoardPosition *childBoards = p2;
+#else
     HexaBitBoardPosition *childBoards = shMem.allChildBoards + moveListOffset;
-
+#endif
 
     // 3. generate the moves now
     if (nMoves)
@@ -2192,10 +2329,17 @@ __global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerft
         cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
        
         uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        perft_bb_gpu<<<nBlocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(uint32), childStream>>> (childBoards, globalPerftCounter, depth-1, allMoves);
+        if (depth == 2)
+            perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(uint32), childStream>>> (childBoards, globalPerftCounter, allMoves);
+        else
+            perft_bb_gpu<<<nBlocks, BLOCK_SIZE, BLOCK_SIZE * sizeof(uint32), childStream>>> (childBoards, globalPerftCounter, depth-1, allMoves);
 
         cudaDeviceSynchronize();
+#if USE_SCATTER_ALLOC == 1
+        delete [] childBoards;
+#else
         cudaFree(childBoards);
+#endif
         cudaStreamDestroy(childStream);
     }
 }
