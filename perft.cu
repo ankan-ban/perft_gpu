@@ -97,14 +97,14 @@ uint64 perft_save_leaves(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (chance == BLACK)
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false, false>(pos, newPositions, 1);
+        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, newPositions);
     }
     else
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false, false>(pos, newPositions, 1);
+        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, newPositions);
     }
 #else
-    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false, false, depth);
+    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false);
 #endif
 
     if (depth == 1)
