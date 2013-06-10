@@ -97,14 +97,14 @@ uint64 perft_save_leaves(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (chance == BLACK)
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<BLACK, false>(pos, newPositions);
+        nMoves = MoveGeneratorBitboard::generateBoards<BLACK>(pos, newPositions);
     }
     else
     {
-        nMoves = MoveGeneratorBitboard::generateMoves<WHITE, false>(pos, newPositions);
+        nMoves = MoveGeneratorBitboard::generateBoards<WHITE>(pos, newPositions);
     }
 #else
-    nMoves = MoveGeneratorBitboard::generateMoves(pos, newPositions, chance, false);
+    nMoves = MoveGeneratorBitboard::generateBoards(pos, newPositions, chance);
 #endif
 
     if (depth == 1)
@@ -228,7 +228,7 @@ void testSingleLevelMoveGen(HexaBitBoardPosition *pos, int depth)
     EventTimer gputime;
     gputime.start();
     for (int i=0;i<100;i++)
-        generate_moves_single_level <<<nBlocks, BLOCK_SIZE>>> (gpuBoard, (HexaBitBoardPosition **) moveCounts, posCounter);
+        generate_moves_single_level <<<nBlocks, BLOCK_SIZE, BLOCK_SIZE>>> (gpuBoard, (HexaBitBoardPosition **) moveCounts, posCounter);
     cudaDeviceSynchronize();
     gputime.stop();
     if (cudaGetLastError() != S_OK)
@@ -297,8 +297,8 @@ int main()
     Utils::board088ToHexBB(&testBB, &testBoard);
     Utils::boardHexBBTo088(&testBoard, &testBB);
 
-    int minDepth = 6;
-    int maxDepth = 6;
+    int minDepth = 4;
+    int maxDepth = 7;
 
     int hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, maxDepth-1);
     if (hr != S_OK)
@@ -307,9 +307,8 @@ int main()
     
     // Ankan - for testing
     //testSingleLevelPerf(&testBB, 5);
-    testSingleLevelMoveGen(&testBB, 4);
-    maxDepth = 0;
-
+    //testSingleLevelMoveGen(&testBB, 4);
+    //maxDepth = 0;
 
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
@@ -340,8 +339,8 @@ int main()
 
         EventTimer gputime;
         gputime.start();
-        perft_bb_gpu <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
-        //perft_bb_gpu_safe <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
+        //perft_bb_gpu <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
+        perft_bb_gpu_safe <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
         gputime.stop();
         if (cudaGetLastError() != S_OK)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
@@ -359,7 +358,6 @@ int main()
         //cudaFree(gpu_perft);
 #endif
     }
-    
     cudaDeviceReset();
     return 0;
 }

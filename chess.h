@@ -235,8 +235,86 @@ struct HexaBitBoardPosition
 };
 CT_ASSERT(sizeof(HexaBitBoardPosition) == 48);
 
+// a more compact move structure (16 bit)
+// from http://chessprogramming.wikispaces.com/Encoding+Moves
+class CMove
+{
+public:
+
+    CMove(uint8 from, uint8 to, uint8 flags) 
+    {
+        m_Move = ((flags & 0xF) << 12) | ((to & 0x3F) << 6) | (from & 0x3F);
+    }
+
+    CMove()
+    {
+        m_Move = 0;
+    }
+
+    unsigned int getTo()    const {return (m_Move >> 6)  & 0x3F;}
+    unsigned int getFrom()  const {return (m_Move)       & 0x3F;}
+    unsigned int getFlags() const {return (m_Move >> 12) & 0x0F;}
+
+    bool operator == (CMove a) const {return (m_Move == a.m_Move);}
+    bool operator != (CMove a) const {return (m_Move != a.m_Move);}
+
+    void operator = (CMove a) 
+    {
+        m_Move = a.m_Move;
+    }
+
+protected:
+
+   uint16 m_Move;
+
+};
+
+CT_ASSERT(sizeof(CMove) == 2);
+
+enum eCompactMoveFlag
+{
+    CM_FLAG_QUIET_MOVE        = 0,
+
+    CM_FLAG_DOUBLE_PAWN_PUSH  = 1,
+
+    CM_FLAG_KING_CASTLE       = 2,
+    CM_FLAG_QUEEN_CASTLE      = 3,
+
+    CM_FLAG_CAPTURE           = 4,
+    CM_FLAG_EP_CAPTURE        = 5,
 
 
+    CM_FLAG_PROMOTION         = 8,
+
+    CM_FLAG_KNIGHT_PROMOTION  = 8,
+    CM_FLAG_BISHOP_PROMOTION  = 9,
+    CM_FLAG_ROOK_PROMOTION    = 10,
+    CM_FLAG_QUEEN_PROMOTION   = 11,
+
+    CM_FLAG_KNIGHT_PROMO_CAP  = 12,
+    CM_FLAG_BISHOP_PROMO_CAP  = 13,
+    CM_FLAG_ROOK_PROMO_CAP    = 14,
+    CM_FLAG_QUEEN_PROMO_CAP   = 15,
+};
+
+// might want to use these flags:
+/*
+code	promotion	capture	special 1	special 0	kind of move
+0	    0        	0    	0        	0        	quiet moves
+1	    0        	0    	0        	1        	double pawn push
+2	    0        	0    	1        	0        	king castle
+3	    0        	0    	1        	1        	queen castle
+4	    0        	1    	0        	0        	captures
+5	    0        	1    	0        	1        	ep-capture
+8	    1        	0    	0        	0        	knight-promotion
+9	    1        	0    	0        	1        	bishop-promotion
+10	    1        	0    	1        	0        	rook-promotion
+11	    1        	0    	1        	1        	queen-promotion
+12	    1        	1    	0        	0        	knight-promo capture
+13	    1        	1    	0        	1        	bishop-promo capture
+14	    1        	1    	1        	0        	rook-promo capture
+15	    1        	1    	1        	1        	queen-promo capture
+*/
 
 
 // max no of moves possible for a given board position (this can be as large as 218 ?)
@@ -302,6 +380,7 @@ public:
     // displays a move in human readable form
     static void displayMove(Move move);
     static void displayMoveBB(Move move);
+    static void displayCompactMove(CMove move);
 
     static void board088ToChar(char board[8][8], BoardPosition *pos);
     static void boardCharTo088(BoardPosition *pos, char board[8][8]);

@@ -201,8 +201,13 @@ void Utils::boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
 {
     memset(pos088, 0, sizeof(BoardPosition));
 
-    uint64 allPieces = posBB->kings | posBB->knights | posBB->pawns | posBB->rookQueens | posBB->bishopQueens;
+
     uint64 queens = posBB->bishopQueens & posBB->rookQueens;
+
+#define RANKS2TO7 0x00FFFFFFFFFFFF00ull
+    uint64 pawns = posBB->pawns & RANKS2TO7;
+
+    uint64 allPieces = posBB->kings | posBB->knights | pawns | posBB->rookQueens | posBB->bishopQueens;
 
     for (uint8 i=0;i<64;i++)
     {
@@ -222,7 +227,7 @@ void Utils::boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
             {
                 piece = KNIGHT;
             }
-            else if (posBB->pawns & BIT(i))
+            else if (pawns & BIT(i))
             {
                 piece = PAWN;
             }
@@ -319,6 +324,15 @@ void Utils::displayMove(Move move)
             r2);
 
     printf(dispString);
+}
+
+void Utils::displayCompactMove(CMove move)
+{
+    Move move2;
+    move2.capturedPiece = (move.getFlags() & CM_FLAG_CAPTURE);
+    move2.src = move.getFrom();
+    move2.dst = move.getTo();
+    displayMoveBB(move2);
 }
 
 void Utils::displayMoveBB(Move move) 
