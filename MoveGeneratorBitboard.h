@@ -7,9 +7,23 @@
     bool printMoves = false;
 #endif
 
+// don't call cudaMalloc/cudaFree from device code, 
+// suballocate from a pre-allocated buffer instead
+#define USE_PREALLOCATED_MEMORY 1
+
+// 1 GB for now
+#define PREALLOCATED_MEMORY_SIZE (1 * 1024 * 1024 * 1024)
+           void   *preAllocatedBufferHost;
+__device__ void   *preAllocatedBuffer;
+__device__ uint32  preAllocatedMemoryUsed;
+
+
+// use fancy warp wide ballot/popc to coalesce memory writes for moves
+#define OPTIMIZE_BOARD_STORES 0
+
 // use trove library coalesced_ptr (that makes use of SHFL instruction) to optimize AOS reads
 // reduces performance by a small amount :-/
-#define USE_TROVE_AOS_OPT 1
+#define USE_TROVE_AOS_OPT 0
 #if USE_TROVE_AOS_OPT == 1
 #include <trove/ptr.h>
 #include <trove/aos.h>
@@ -730,6 +744,7 @@ public:
 
         err = cudaMemcpyToSymbol(gKingAttacks, KingAttacks, sizeof(KingAttacks));
         printf("For copying KingAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
 #endif
 
     }
@@ -1234,8 +1249,31 @@ public:
     CUDA_CALLABLE_MEMBER __forceinline static void addCompactMove(uint32 *nMoves, CMove **genMoves, uint8 from, uint8 to, uint8 flags)
     {
         CMove move(from, to, flags);
+
+#if defined(__CUDA_ARCH__) && OPTIMIZE_BOARD_STORES == 1 
+        uint32 activeThreadMaskInWarp = __ballot(true);
+
+        uint32 laneIdx = threadIdx.x & 0x1F;
+
+        // *genMoves points to shared memory location containing the starting address where threads in this warp are going to write
+        
+        // 1. find out the offset where this thread must write (which is the num of Active Threads Before This Thread in the warp)
+        uint32 offset = __popc(activeThreadMaskInWarp & ((1 << laneIdx) - 1));
+
+
+        // 2. write the new board
+        (*genMoves)[offset] = move;
+
+        // 3. the first active thread in the warp updates the shared memory pointer containing the starting address
+        if (__ffs(activeThreadMaskInWarp) == laneIdx + 1)
+        {
+            uint32 numMovesInWarp = __popc(activeThreadMaskInWarp);
+            (*genMoves) += numMovesInWarp;
+        }
+#else
         **genMoves = move;
         (*genMoves)++;
+#endif
         (*nMoves)++;
     }
 
@@ -3175,6 +3213,48 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 
 #define BLOCK_SIZE 256
 
+#define ALIGN_UP(addr, align)   (((addr) + (align) - 1) & (~((align) - 1)))
+
+template<typename T>
+__device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
+{
+#if USE_PREALLOCATED_MEMORY == 1
+    // align up the size to nearest 128 bytes
+    size = ALIGN_UP(size, 4096);
+    uint32 startOffset = atomicAdd(&preAllocatedMemoryUsed, size);
+    if (startOffset >= PREALLOCATED_MEMORY_SIZE)
+    {
+        printf("\nFailed allocating %d bytes\n", size);
+        return E_FAIL;
+    }
+
+    *ptr = (T*) ((uint8 *)preAllocatedBuffer + startOffset);
+
+    //printf("\nAllocated %d bytes at address: %X\n", size, *ptr);
+
+#elif USE_SCATTER_ALLOC == 1
+    *ptr = new T[size];
+    if (*ptr == NULL)
+        return E_FAIL
+#else
+    return cudaMalloc(ptr, size);
+#endif
+
+    return S_OK;
+}
+
+template<typename T>
+__device__ __forceinline__ void deviceFree(T *ptr)
+{
+#if USE_PREALLOCATED_MEMORY == 1
+    // we don't free memory here (memory is freed when the recursive serial kernel gets back the control)
+#elif USE_SCATTER_ALLOC == 1
+    delete [] ptr;
+#else
+    cudaFree(ptr);
+#endif
+}
+
 
 __device__ __forceinline__ uint32 countMoves(HexaBitBoardPosition *pos, uint8 color)
 {
@@ -3192,7 +3272,7 @@ __device__ __forceinline__ uint32 countMoves(HexaBitBoardPosition *pos, uint8 co
 #endif
 }
 
-__device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8 color, HexaBitBoardPosition *childBoards)
+__device__ __forceinline__ uint32 generateBoards(HexaBitBoardPosition *pos, uint8 color, HexaBitBoardPosition *childBoards)
 {
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (color == BLACK)
@@ -3205,6 +3285,23 @@ __device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8
     }
 #else
     return MoveGeneratorBitboard::generateBoards(pos, childBoards, color);
+#endif
+}
+
+
+__device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8 color, CMove *genMoves)
+{
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        return MoveGeneratorBitboard::generateMoves<BLACK>(pos, genMoves);
+    }
+    else
+    {
+        return MoveGeneratorBitboard::generateMoves<WHITE>(pos, genMoves);
+    }
+#else
+    return MoveGeneratorBitboard::generateMoves(pos, genMoves, color);
 #endif
 }
 
@@ -3252,97 +3349,15 @@ union sharedMemAllocs
 {
     struct
     {
-        uint32 movesForThread[BLOCK_SIZE];
-        HexaBitBoardPosition *allChildBoards;
-        HexaBitBoardPosition *allSecondLevelChildBoards;
-        uint32 *allChildCounters;
+        uint32                  movesForThread[BLOCK_SIZE];
+        HexaBitBoardPosition    *allChildBoards;
+        CMove                   *allSecondLevelChildMoves;
+        HexaBitBoardPosition   **boardPointers;
+        uint32                  *allChildCounters;
     };
 };
 
-#if 0
-// this version allocates memory and launches a grid per warp instead of per thread block
-// around 2X slower than doing it per thread block (~5.4 billion moves per second best case)
-// doesn't need any shared memory
-__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int depth, int nThreads)
-{
-    // exctact one element of work
-    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
-
-#if USE_TROVE_AOS_OPT == 1
-    trove::coalesced_ptr<HexaBitBoardPosition> p(position);
-    HexaBitBoardPosition pos = p[index];
-#else
-    HexaBitBoardPosition pos = position[index];
-#endif
-
-    uint8 color = pos.chance;
-
-    // 1. first just count the moves (and store it in shared memory for each thread in block)
-    int nMoves = 0;
-
-    if (index < nThreads)
-        nMoves = countMoves(&pos, color);
-
-    int laneId = threadIdx.x & 0x1f;
-
-    if (depth == 1)
-    {
-        // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
-        // wrap-wide reduction seems a little bit faster
-        wrapReduce(nMoves);
-
-        if (laneId == 0)
-        {
-            atomicAdd (globalPerftCounter, nMoves);
-        }
-        return;
-    }
-
-    int moveListOffset = nMoves;
-    wrapScan(moveListOffset, laneId);
-
-    int allMoves = __shfl(moveListOffset, (blockDim.x-1) % 32);
-    
-    // first thread of the warp allocates memory for childBoards for the entire warp
-    HexaBitBoardPosition *allChildBoards;
-    if (laneId == 0 && allMoves !=0)
-    {
-        int hr;
-        hr = cudaMalloc(&allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
-        //if (hr != 0)
-        //    printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
-    }
-
-    // get address from first thread
-    allChildBoards = (HexaBitBoardPosition *)   __shfl((int)allChildBoards, 0);
-
-    // address of starting of move list for the current thread
-    // convert inclusive scan to exclusive scan
-    HexaBitBoardPosition *childBoards = allChildBoards + moveListOffset - nMoves;
-
-    // 3. generate the moves now
-    if (nMoves)
-    {
-        generateMoves(&pos, color, childBoards);
-    }
-
-    // 4. first thread of each thread block launches new work (for moves generated by all threads in the thread block)
-    if (laneId == 0 && allMoves != 0)
-    {
-        cudaStream_t childStream;
-        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
-       
-        uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        perft_bb_gpu<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (childBoards, globalPerftCounter, depth-1, allMoves);
-
-        cudaDeviceSynchronize();
-        cudaFree(childBoards);
-        cudaStreamDestroy(childStream);
-    }
-}
-#endif
-
-
+__launch_bounds__( BLOCK_SIZE, 4 )
 __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int nThreads)
 {
 
@@ -3365,6 +3380,10 @@ __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition *position, uint64
         nMoves = countMoves(&pos, color);
 
     //printf("index %d, moves: %d\n", index, nMoves);
+    /*
+    if (index <= 2)
+        printf("%d    %d\n", index, nMoves);
+    */
 
     // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
     // wrap-wide reduction seems a little bit faster
@@ -3379,7 +3398,76 @@ __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition *position, uint64
     return;
 }
 
+// this version gets a list of moves, and a list of pointers to BitBoards
+// first it makes the move to get the new board and then counts the moves possible on the board
+// positions        - array of pointers to old boards
+// generatedMoves   - moves to be made
+__launch_bounds__( BLOCK_SIZE, 4 )
+__global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions, CMove *generatedMoves, uint64 *globalPerftCounter, int nThreads)
+{
+
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= nThreads)
+        return;
+
+    HexaBitBoardPosition *posPointer = positions[index];
+    HexaBitBoardPosition pos = *posPointer;
+    uint8 color = pos.chance;
+
+    CMove move = generatedMoves[index];
+
+    // Ankan - for testing
+    /*
+    if (index <= 2)
+    {
+        Utils::displayCompactMove(move);
+        printf("thread %d, whitePieces: %X%X, pawns: %X%X, knights: %X%X, kings: %X%X, rooks: %X%X, bishops: %X%X\n", index, pos.whitePieces, pos.pawns, pos.knights, pos.kings, pos.rookQueens, pos.bishopQueens);
+    }
+    */
+
+    // 1. make the move
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (color == BLACK)
+    {
+        MoveGeneratorBitboard::makeMove<BLACK>(&pos, move);
+    }
+    else
+    {
+        MoveGeneratorBitboard::makeMove<WHITE>(&pos, move);
+    }
+#else
+        MoveGeneratorBitboard::makeMove(&pos, move, color);
+#endif
+
+
+    // 2. count moves at this position
+
+    int nMoves = 0;
+
+    nMoves = countMoves(&pos, !color);
+
+    /*
+    if (index <= 2)
+        printf("%d    %d\n", index, nMoves);
+    */
+
+    // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
+    // wrap-wide reduction seems a little bit faster
+    wrapReduce(nMoves);
+
+    int laneId = threadIdx.x & 0x1f;
+    
+    if (laneId == 0)
+    {
+        atomicAdd (globalPerftCounter, nMoves);
+    }
+}
+
+
 // moveCounts are per each thread
+__launch_bounds__( BLOCK_SIZE, 4 )
 __global__ void count_moves_single_level(HexaBitBoardPosition *position, uint32 *moveCounts, int nThreads)
 {
 
@@ -3395,7 +3483,7 @@ __global__ void count_moves_single_level(HexaBitBoardPosition *position, uint32 
 
     uint8 color = pos.chance;
 
-    // 1. first just count the moves (and store it in shared memory for each thread in block)
+    // just count the no. of moves for each board and save it in moveCounts array
     int nMoves = 0;
 
     if (index < nThreads)
@@ -3404,7 +3492,8 @@ __global__ void count_moves_single_level(HexaBitBoardPosition *position, uint32 
     moveCounts[index] = nMoves;
 }
 
-__global__ void generate_moves_single_level(HexaBitBoardPosition *positions, HexaBitBoardPosition **childPositions, int nThreads)
+// childPositions is array of pointers
+__global__ void generate_boards_single_level(HexaBitBoardPosition *positions, HexaBitBoardPosition **childPositions, int nThreads)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -3423,14 +3512,105 @@ __global__ void generate_moves_single_level(HexaBitBoardPosition *positions, Hex
     uint8 color = pos.chance;
 
     if (index < nThreads)
-        generateMoves(&pos, color, childBoards);
+        generateBoards(&pos, color, childBoards);
 }
 
-#if 0
-// still runs out of memory :-/
+// generatedMoves is array of pointers
+__global__ void generate_moves_single_level(HexaBitBoardPosition *positions, CMove **generatedMoves, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
 
-// this version should be called only at depth = 3
-__global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int nThreads)
+#if USE_TROVE_AOS_OPT == 1
+    HexaBitBoardPosition pos = trove::load_warp_contiguous(&positions[index]);
+#else
+    HexaBitBoardPosition pos = positions[index];
+#endif
+
+#if OPTIMIZE_BOARD_STORES == 1
+    // one pointer per warp
+    // storing the starting address of the newBoard array where the warp will write the boards
+    __shared__ volatile uint32 warpNewBoardPointers[BLOCK_SIZE / 32];
+
+    uint32 laneIdx = threadIdx.x & 0x1F;
+    uint32 warpIdx = threadIdx.x / 32;
+
+    if (laneIdx == 0)
+    {
+        warpNewBoardPointers[warpIdx] = (uint32) generatedMoves[index];
+    }
+
+    CMove *genMoves = (CMove *) warpNewBoardPointers[warpIdx];
+#else
+    CMove *genMoves = generatedMoves[index];
+#endif
+
+    uint8 color = pos.chance;
+
+    if (index < nThreads)
+    {
+        generateMoves(&pos, color, genMoves);
+
+        /*
+        // Ankan - for testing
+        printf("\nNo of Moves generated by thread %d : %d\n", index, nMoves);
+        for (int i=0;i<nMoves;i++)
+            //printf("%hd ", genMoves[i].getFrom());
+            Utils::displayCompactMove(genMoves[i]);
+        */
+    }
+}
+
+// it might be possible to skip this kernel entirely and do the makeMove in the kernel that counts the moves (single level perft)
+__global__ void makeMoves(HexaBitBoardPosition *positions, CMove *generatedMoves, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+
+#if USE_TROVE_AOS_OPT == 1
+    trove::coalesced_ptr<HexaBitBoardPosition> p(positions);
+    HexaBitBoardPosition pos = p[index];
+    //HexaBitBoardPosition pos = trove::load_warp_contiguous(&positions[index]);
+#else
+    HexaBitBoardPosition pos = positions[index];
+#endif
+
+    CMove move = generatedMoves[index];
+
+    // Ankan - for testing
+    if (index <= 2)
+    {
+        Utils::displayCompactMove(move);
+    }
+
+    int chance = pos.chance;
+
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    if (chance == BLACK)
+    {
+        MoveGeneratorBitboard::makeMove<BLACK>(&pos, move);
+    }
+    else
+    {
+        MoveGeneratorBitboard::makeMove<WHITE>(&pos, move);
+    }
+#else
+        MoveGeneratorBitboard::makeMove(&pos, move, chance);
+#endif
+
+#if USE_TROVE_AOS_OPT == 1
+    p[index] = pos;
+#else
+    positions[index] = pos;
+#endif
+}
+
+
+// this version launches two levels as a single gird
+// to be called only at depth == 3
+// ~20 Billion moves per second in best case!
+__global__ void perft_bb_gpu_depth3(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int nThreads)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -3468,9 +3648,13 @@ __global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *global
     {
         //printf("\nFirst level moves: %d\n", allMoves);
         int hr;
-        hr = cudaMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
+        hr = deviceMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
+        /*
         if (hr != 0)
-            printf("error in malloc for childBoards at in perft_bb_2_levels, for %d moves\n", allMoves);
+            printf("error in malloc for childBoards at depth %d, for %d moves\n", 3, allMoves);
+        else
+            printf("\nAllocated allChildBoards of %d bytes, address: %X\n", sizeof(HexaBitBoardPosition) * allMoves, shMem.allChildBoards);
+        */
     }
 
     __syncthreads();
@@ -3482,7 +3666,7 @@ __global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *global
     // 3. generate the moves now
     if (nMoves)
     {
-        generateMoves(&pos, color, childBoards);
+        generateBoards(&pos, color, childBoards);
     }
 
     __syncthreads();
@@ -3496,22 +3680,28 @@ __global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *global
         cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
        
         uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        int hr = cudaMalloc(&childMoveCounts, sizeof(uint32) * allMoves);
-        if (hr != 0)
-            printf("error in malloc for childMoveCounts in perft_bb_2_levels, for %d moves\n", allMoves);
+        {
+            int hr = deviceMalloc(&childMoveCounts, sizeof(uint32) * allMoves);
+            /*
+            if (hr != 0)
+                printf("error in malloc for childMoveCounts at depth %d, for %d moves\n", 3, allMoves);
+            else
+                printf("\nAllocated childMoveCounts of %d bytes, address: %X\n", sizeof(uint32) * allMoves, childMoveCounts);
+            */
 
-        shMem.allChildCounters = childMoveCounts;
+            shMem.allChildCounters = childMoveCounts;
 
-        // first count the moves that would be generated by childs
-        count_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, childMoveCounts, allMoves);
-        cudaDeviceSynchronize();
+            // first count the moves that would be generated by childs
+            count_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, childMoveCounts, allMoves);
+            cudaDeviceSynchronize();
+        }
     }
 
     __syncthreads();
 
     childMoveCounts = shMem.allChildCounters;
 
-    // movelistOffset contains starting location of childs for each thead
+    // movelistOffset contains starting location of childs for each thread
     uint32 localMoveCounter = 0;    // no. of child moves generated by child boards of this thread
     for (int i = 0; i < nMoves; i++)
     {
@@ -3529,8 +3719,8 @@ __global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *global
     {
         if (threadIdx.x == 0)
         {
-            cudaFree(childBoards);
-            cudaFree(childMoveCounts);
+            deviceFree(childBoards);
+            deviceFree(childMoveCounts);
             cudaStreamDestroy(childStream);
         }
         return;
@@ -3539,57 +3729,103 @@ __global__ void perft_bb_2_levels(HexaBitBoardPosition *position, uint64 *global
     // first thread of the block allocates memory for all second level childs
     if (threadIdx.x == 0)
     {
-        //printf("\nSecond level moves: %d\n", allSecondLevelMoves);
+        /*
+        printf("\nSecond level moves: %d, per thread breakup:\n", allSecondLevelMoves);
+        for (int i=0;i < blockDim.x; i++)
+            printf("% d", shMem.movesForThread[i]);
+        */
+
         int hr;
-        hr = cudaMalloc(&shMem.allSecondLevelChildBoards, sizeof(HexaBitBoardPosition) * allSecondLevelMoves);
+        hr = deviceMalloc(&shMem.allSecondLevelChildMoves, sizeof(CMove) * allSecondLevelMoves);
+        /*
         if (hr != 0)
-            printf("error in malloc for allSecondLevelChildBoards in perft_bb_2_levels for %d moves\n", allSecondLevelMoves);
+            printf("error in malloc for allSecondLevelChildMoves at depth %d, for %d moves\n", 3, allSecondLevelMoves);
+        else
+            printf("\nAllocated allSecondLevelChildMoves of %d bytes, address: %X\n", sizeof(CMove) * allSecondLevelMoves, shMem.allSecondLevelChildMoves);
+        */
+
+        hr = deviceMalloc(&shMem.boardPointers, sizeof(void *) * allSecondLevelMoves);
+        /*
+        if (hr != 0)
+            printf("error in malloc for boardPointers at depth %d, for %d moves\n", 3, allSecondLevelMoves);
+        else
+            printf("\nAllocated boardPointers of %d bytes, address: %X\n", sizeof(void *) * allSecondLevelMoves, shMem.boardPointers);
+        */
     }
 
     __syncthreads();
-    HexaBitBoardPosition *secondLevelChildBoards = shMem.allSecondLevelChildBoards;
+    CMove *secondLevelChildMoves = shMem.allSecondLevelChildMoves;
 
     // do full scan of childMoveCounts global memory array to get starting offsets of all second level child moves
     // all threads do this in a co-operative way
     uint32 baseOffset = shMem.movesForThread[threadIdx.x] - localMoveCounter;
+    HexaBitBoardPosition **boardPointers = shMem.boardPointers;
+
+    // TODO: this operation is expensive
+    // fix this by colaesing memory reads/writes
     for (int i = 0; i < nMoves; i++)
     {
         uint32 temp = childMoveCounts[moveListOffset + i];
-        childMoveCounts[moveListOffset + i] = (uint32) (secondLevelChildBoards + baseOffset);
+        HexaBitBoardPosition *currentBoardPointer = &childBoards[i];
+        for (int j=0; j < temp; j++)
+        {
+            // this is about 2000 writes for each thread!
+            boardPointers[baseOffset + j] = currentBoardPointer;
+        }
+        childMoveCounts[moveListOffset + i] = (uint32) (secondLevelChildMoves + baseOffset);
         baseOffset += temp;
     }
 
-    __syncthreads();    
+    __syncthreads();
     // childMoveCounts now have the exclusive scan - containing the addresses to put moves on
 
     if (threadIdx.x == 0)
     {
         /*
-        printf("\nOffsets for second level moves: %X\n", secondLevelChildBoards);
+        printf("\nChild boards: %d\n", allMoves);
         for (int i=0; i < allMoves; i++)
         {
-            printf("%X ", childMoveCounts[i]);
+            printf("%X ", &childBoards[i]);
         }
         */
+        /*
+        printf("\nOffsets for second level moves: %X\n", secondLevelChildMoves);
+        for (int i=0; i < allMoves; i++)
+        {
+            printf("%d ", childMoveCounts[i] - (int) secondLevelChildMoves);
+        }
 
+        printf("\nnumber of second level moves: %d, board pointers\n", allSecondLevelMoves);
+        for (int i=0; i < allSecondLevelMoves; i+=100)
+        {
+            printf("%X ", boardPointers[i]);
+        }
+        */
+        
         // first thread of the block now launches kernel that generates second level moves
         uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, (HexaBitBoardPosition **) childMoveCounts, allMoves);
+        generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, (CMove **) childMoveCounts, allMoves);
         cudaDeviceSynchronize();
-        cudaFree(childBoards);
-
 
         // now we have all second level generated moves in secondLevelChildBoards .. launch a kernel at depth - 2 to recurse
         nBlocks = (allSecondLevelMoves - 1) / BLOCK_SIZE + 1;
-        perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>> (secondLevelChildBoards, globalPerftCounter, allSecondLevelMoves);
-
+        {
+            makeMove_and_perft_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>> (boardPointers, secondLevelChildMoves, globalPerftCounter, allSecondLevelMoves);
+        }
         cudaDeviceSynchronize();
-        cudaFree(childMoveCounts);
-        cudaFree(secondLevelChildBoards);
+
+        //printf("\nFreeing childBoards: %X\n", childBoards);
+        deviceFree(childBoards);
+        //printf("\nFreeing childMoveCounts: %X\n", childMoveCounts);
+        deviceFree(childMoveCounts);
+        //printf("\nFreeing secondLevelChildMoves: %X\n", secondLevelChildMoves);
+        deviceFree(secondLevelChildMoves);
+        //printf("\nFreeing boardPointers: %X\n", boardPointers);
+        deviceFree(boardPointers);
         cudaStreamDestroy(childStream);
     }
 }
-#endif
+
 
 // this version avoids allocating MAX_MOVES boards (so childChildBoards is never allocated by parent)
 // speed ~10 billion moves per second in best case
@@ -3636,13 +3872,9 @@ __global__ void perft_bb_gpu_safe(HexaBitBoardPosition *position, uint64 *global
     if (threadIdx.x == 0)
     {
         int hr;
-#if USE_SCATTER_ALLOC == 1
-        shMem.allChildBoards = new HexaBitBoardPosition[allMoves];
-#else
-        hr = cudaMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
+        hr = deviceMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
         if (hr != 0)
             printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
-#endif
     }
 
     __syncthreads();
@@ -3659,7 +3891,7 @@ __global__ void perft_bb_gpu_safe(HexaBitBoardPosition *position, uint64 *global
     // 3. generate the moves now
     if (nMoves)
     {
-        generateMoves(&pos, color, childBoards);
+        generateBoards(&pos, color, childBoards);
     }
 
     __syncthreads();
@@ -3674,211 +3906,58 @@ __global__ void perft_bb_gpu_safe(HexaBitBoardPosition *position, uint64 *global
 
         if (depth == 2)
             perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (childBoards, globalPerftCounter, allMoves);
-/*
         else if (depth == 4)
-            perft_bb_2_levels<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (childBoards, globalPerftCounter, allMoves);
-*/
+            perft_bb_gpu_depth3<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (childBoards, globalPerftCounter, allMoves);
         else
             perft_bb_gpu_safe<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (childBoards, globalPerftCounter, depth-1, allMoves);
 
         cudaDeviceSynchronize();
-#if USE_SCATTER_ALLOC == 1
-        delete [] childBoards;
-#else
-        cudaFree(childBoards);
-#endif
+        deviceFree(childBoards);
         cudaStreamDestroy(childStream);
     }
 }
 
 
-#if 1
-// this version launches two levels as a single gird
-// don't call with depth = 1
-// ~14.6 Billion moves per second in best case but runs out of memory very soon :-/
-__global__ void perft_bb_gpu(HexaBitBoardPosition *position, uint64 *globalPerftCounter, int depth, int nThreads)
+__device__ void perft_bb_gpu_recursive_launcher(HexaBitBoardPosition *pos, uint64 *globalPerftCounter, int depth, HexaBitBoardPosition *boardStack, int launchDepth)
 {
-    // exctact one element of work
-    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
-    HexaBitBoardPosition pos = position[index];
+    uint32 nMoves = 0;
+    uint8 color = pos->chance;
 
-    // shared memory structure containing moves generated by each thread in the thread block
-    __shared__ sharedMemAllocs shMem;
-
-    uint8 color = pos.chance;
-
-    // 1. first just count the moves (and store it in shared memory for each thread in block)
-    int nMoves = 0;
-
-    if (index < nThreads)
-        nMoves = countMoves(&pos, color);
-
-    shMem.movesForThread[threadIdx.x] = nMoves;
-    __syncthreads();
-
-    // 2. perform scan (prefix sum) to figure out starting addresses of child boards
-    scan(shMem.movesForThread);
-    
-    // convert inclusive scan to exclusive scan
-    uint32 moveListOffset = shMem.movesForThread[threadIdx.x] - nMoves;
-
-    // first thread of the block allocates memory for childBoards for the entire thread block
-    uint32 allMoves = shMem.movesForThread[blockDim.x - 1];
-
-    // nothing more to do!
-    if (allMoves == 0)
-        return;
-
-    // first thread of block allocates memory to store all moves generated by the thread block
-    if (threadIdx.x == 0)
+    if (depth == 1)
     {
-        //printf("\nFirst level moves: %d\n", allMoves);
-        int hr;
-        hr = cudaMalloc(&shMem.allChildBoards, sizeof(HexaBitBoardPosition) * allMoves);
-        if (hr != 0)
-            printf("error in malloc for childBoards at depth %d, for %d moves\n", depth, allMoves);
+        nMoves = countMoves(pos, color);
+        atomicAdd (globalPerftCounter, nMoves);
     }
-
-    __syncthreads();
-
-    // other threads get value from shared memory
-    // address of starting of move list for the current thread
-    HexaBitBoardPosition *childBoards = shMem.allChildBoards + moveListOffset;
-
-    // 3. generate the moves now
-    if (nMoves)
+    else if (depth <= launchDepth)
     {
-        generateMoves(&pos, color, childBoards);
-    }
-
-    __syncthreads();
-
-    // 4. first thread of each thread block launches new work (for moves generated by all threads in the thread block)
-    cudaStream_t childStream;
-    uint32 *childMoveCounts;
-
-    if (threadIdx.x == 0)
-    {
-        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
-       
-        uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        if (depth == 2)
-        {
-            perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>> (childBoards, globalPerftCounter, allMoves);
-
-            cudaDeviceSynchronize();
-            cudaFree(childBoards);
-            cudaStreamDestroy(childStream);
-        }
-        else
-        {
-            int hr = cudaMalloc(&childMoveCounts, sizeof(uint32) * allMoves);
-            if (hr != 0)
-                printf("error in malloc for childMoveCounts at depth %d, for %d moves\n", depth, allMoves);
-
-            shMem.allChildCounters = childMoveCounts;
-
-            // first count the moves that would be generated by childs
-            count_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, childMoveCounts, allMoves);
-            cudaDeviceSynchronize();
-        }
-    }
-
-    if (depth == 2)
-    {
-        return;
-    }
-
-    __syncthreads();
-
-    childMoveCounts = shMem.allChildCounters;
-
-    // movelistOffset contains starting location of childs for each thead
-    uint32 localMoveCounter = 0;    // no. of child moves generated by child boards of this thread
-    for (int i = 0; i < nMoves; i++)
-    {
-        localMoveCounter += childMoveCounts[moveListOffset + i];
-    }
-
-    // put localMoveCounter in shared memory and perform a scan to get first level scan
-    shMem.movesForThread[threadIdx.x] = localMoveCounter;
-
-    __syncthreads();
-    scan(shMem.movesForThread);
-
-    uint32 allSecondLevelMoves = shMem.movesForThread[blockDim.x - 1];
-    if (allSecondLevelMoves == 0)
-    {
-        if (threadIdx.x == 0)
-        {
-            cudaFree(childBoards);
-            cudaFree(childMoveCounts);
-            cudaStreamDestroy(childStream);
-        }
-        return;
-    }
-
-    // first thread of the block allocates memory for all second level childs
-    if (threadIdx.x == 0)
-    {
-        //printf("\nSecond level moves: %d\n", allSecondLevelMoves);
-        int hr;
-        hr = cudaMalloc(&shMem.allSecondLevelChildBoards, sizeof(HexaBitBoardPosition) * allSecondLevelMoves);
-        if (hr != 0)
-            printf("error in malloc for allSecondLevelChildBoards at depth %d, for %d moves\n", depth, allSecondLevelMoves);
-    }
-
-    __syncthreads();
-    HexaBitBoardPosition *secondLevelChildBoards = shMem.allSecondLevelChildBoards;
-
-    // do full scan of childMoveCounts global memory array to get starting offsets of all second level child moves
-    // all threads do this in a co-operative way
-    uint32 baseOffset = shMem.movesForThread[threadIdx.x] - localMoveCounter;
-    for (int i = 0; i < nMoves; i++)
-    {
-        uint32 temp = childMoveCounts[moveListOffset + i];
-        childMoveCounts[moveListOffset + i] = (uint32) (secondLevelChildBoards + baseOffset);
-        baseOffset += temp;
-    }
-
-    __syncthreads();    
-    // childMoveCounts now have the exclusive scan - containing the addresses to put moves on
-
-    if (threadIdx.x == 0)
-    {
-        /*
-        printf("\nOffsets for second level moves: %X\n", secondLevelChildBoards);
-        for (int i=0; i < allMoves; i++)
-        {
-            printf("%X ", childMoveCounts[i]);
-        }
-        */
-
-        // first thread of the block now launches kernel that generates second level moves
-        uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
-        generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, (HexaBitBoardPosition **) childMoveCounts, allMoves);
-        cudaDeviceSynchronize();
-        cudaFree(childBoards);
-
-
-        // now we have all second level generated moves in secondLevelChildBoards .. launch a kernel at depth - 2 to recurse
-        nBlocks = (allSecondLevelMoves - 1) / BLOCK_SIZE + 1;
-        if (depth == 3)
-        {
-            perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>> (secondLevelChildBoards, globalPerftCounter, allSecondLevelMoves);
-        }
-        else
-        {
-            perft_bb_gpu<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (secondLevelChildBoards, globalPerftCounter, depth - 2, allSecondLevelMoves);
-        }
+        perft_bb_gpu_safe<<<1, BLOCK_SIZE, sizeof(sharedMemAllocs), 0>>> (pos, globalPerftCounter, depth, 1);
         cudaDeviceSynchronize();
 
-        cudaFree(childMoveCounts);
-        cudaFree(secondLevelChildBoards);
-        cudaStreamDestroy(childStream);
+        // 'free' up the memory used by the launch
+        preAllocatedMemoryUsed = 0;
+    }
+    else
+    {
+        // recurse serially till we reach a depth where we can launch parallel work
+        nMoves = generateBoards(pos, color, boardStack);
+        for (uint32 i=0; i < nMoves; i++)
+        {
+            perft_bb_gpu_recursive_launcher(&boardStack[i], globalPerftCounter, depth-1, &boardStack[MAX_MOVES], launchDepth);
+        }
     }
 }
-#endif
+
+// the starting kernel for perft
+__global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPerftCounter, int depth, HexaBitBoardPosition *boardStack, void *devMemory, int launchDepth)
+{
+    // set device memory pointer
+    preAllocatedBuffer = devMemory;
+    preAllocatedMemoryUsed = 0;
+
+    // call the recursive function
+    perft_bb_gpu_recursive_launcher(pos, globalPerftCounter, depth, boardStack, launchDepth);
+}
+
 
 #endif // #if TEST_GPU_PERFT == 1
 

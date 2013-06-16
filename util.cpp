@@ -326,39 +326,6 @@ void Utils::displayMove(Move move)
     printf(dispString);
 }
 
-void Utils::displayCompactMove(CMove move)
-{
-    Move move2;
-    move2.capturedPiece = (move.getFlags() & CM_FLAG_CAPTURE);
-    move2.src = move.getFrom();
-    move2.dst = move.getTo();
-    displayMoveBB(move2);
-}
-
-void Utils::displayMoveBB(Move move) 
-{
-	char dispString[10];
-
-    uint8 r1, c1, r2, c2;
-    r1 = (move.src >> 3)+1;
-    c1 = (move.src) & 0x7;
-
-    r2 = (move.dst >> 3)+1;
-	c2 = (move.dst) & 0x7;
-
-	char sep = move.capturedPiece ? '*' : '-';
-
-	sprintf(dispString, "%c%d%c%c%d \n", 
-            c1+'a', 
-            r1, 
-			sep,
-            c2+'a', 
-            r2);
-
-    printf(dispString);
-}
-
-
 // reads a FEN string into the given BoardPosition object
 
 /*

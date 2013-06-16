@@ -241,28 +241,29 @@ class CMove
 {
 public:
 
-    CMove(uint8 from, uint8 to, uint8 flags) 
+    CUDA_CALLABLE_MEMBER CMove(uint8 from, uint8 to, uint8 flags) 
     {
         m_Move = ((flags & 0xF) << 12) | ((to & 0x3F) << 6) | (from & 0x3F);
     }
 
-    CMove()
+    CUDA_CALLABLE_MEMBER CMove()
     {
         m_Move = 0;
     }
 
-    unsigned int getTo()    const {return (m_Move >> 6)  & 0x3F;}
-    unsigned int getFrom()  const {return (m_Move)       & 0x3F;}
-    unsigned int getFlags() const {return (m_Move >> 12) & 0x0F;}
+    CUDA_CALLABLE_MEMBER unsigned int getTo()    const {return (m_Move >> 6)  & 0x3F;}
+    CUDA_CALLABLE_MEMBER unsigned int getFrom()  const {return (m_Move)       & 0x3F;}
+    CUDA_CALLABLE_MEMBER unsigned int getFlags() const {return (m_Move >> 12) & 0x0F;}
 
-    bool operator == (CMove a) const {return (m_Move == a.m_Move);}
-    bool operator != (CMove a) const {return (m_Move != a.m_Move);}
+#if 0
+    CUDA_CALLABLE_MEMBER bool operator == (CMove a) const {return (m_Move == a.m_Move);}
+    CUDA_CALLABLE_MEMBER bool operator != (CMove a) const {return (m_Move != a.m_Move);}
 
-    void operator = (CMove a) 
+    CUDA_CALLABLE_MEMBER void operator = (CMove a) 
     {
         m_Move = a.m_Move;
     }
-
+#endif 
 protected:
 
    uint16 m_Move;
@@ -320,6 +321,8 @@ code	promotion	capture	special 1	special 0	kind of move
 // max no of moves possible for a given board position (this can be as large as 218 ?)
 // e.g, test this FEN string "3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1"
 #define MAX_MOVES 256
+
+#define MAX_GAME_LENGTH 300
 
 // max no of moves possible by a single piece
 // actually it's 27 for a queen when it's in the center of the board
@@ -379,8 +382,38 @@ public:
 
     // displays a move in human readable form
     static void displayMove(Move move);
-    static void displayMoveBB(Move move);
-    static void displayCompactMove(CMove move);
+
+    CUDA_CALLABLE_MEMBER static void displayCompactMove(CMove move)
+    {
+        Move move2;
+        move2.capturedPiece = (move.getFlags() & CM_FLAG_CAPTURE);
+        move2.src = move.getFrom();
+        move2.dst = move.getTo();
+        displayMoveBB(move2);
+    }
+
+    CUDA_CALLABLE_MEMBER static void Utils::displayMoveBB(Move move) 
+    {
+	    char dispString[10];
+
+        uint8 r1, c1, r2, c2;
+        r1 = (move.src >> 3)+1;
+        c1 = (move.src) & 0x7;
+
+        r2 = (move.dst >> 3)+1;
+	    c2 = (move.dst) & 0x7;
+
+	    char sep = move.capturedPiece ? '*' : '-';
+
+	    printf("%c%d%c%c%d \n", 
+                c1+'a', 
+                r1, 
+			    sep,
+                c2+'a', 
+                r2);
+
+        //printf(dispString);
+    }
 
     static void board088ToChar(char board[8][8], BoardPosition *pos);
     static void boardCharTo088(BoardPosition *pos, char board[8][8]);
