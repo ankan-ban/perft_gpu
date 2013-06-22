@@ -129,107 +129,6 @@
 			/>
 		</Configuration>
 		<Configuration
-			Name="Release|Win32"
-			OutputDirectory="."
-			IntermediateDirectory="$(ConfigurationName)"
-			ConfigurationType="1"
-			CharacterSet="1"
-			WholeProgramOptimization="1"
-			>
-			<Tool
-				Name="VCPreBuildEventTool"
-			/>
-			<Tool
-				Name="VCCustomBuildTool"
-				ExecutionBucket="2"
-			/>
-			<Tool
-				Name="Cudart Build Rule"
-				Include="../../common/inc"
-				GenerateRelocatableDeviceCode="true"
-				Arch1="35"
-				Arch2="0"
-			/>
-			<Tool
-				Name="CUDA Linker Rule"
-				ExecutionBucket="4"
-				Arch1="35"
-				ExtraNvccOptions="cudadevrt.lib"
-			/>
-			<Tool
-				Name="VCXMLDataGeneratorTool"
-			/>
-			<Tool
-				Name="VCWebServiceProxyGeneratorTool"
-			/>
-			<Tool
-				Name="VCMIDLTool"
-			/>
-			<Tool
-				Name="VCCLCompilerTool"
-				Optimization="2"
-				EnableIntrinsicFunctions="true"
-				PreprocessorDefinitions="WIN32;NDEBUG;_CONSOLE"
-				RuntimeLibrary="2"
-				EnableFunctionLevelLinking="true"
-				UsePrecompiledHeader="0"
-				WarningLevel="3"
-				DebugInformationFormat="3"
-			/>
-			<Tool
-				Name="VCManagedResourceCompilerTool"
-			/>
-			<Tool
-				Name="VCResourceCompilerTool"
-			/>
-			<Tool
-				Name="VCPreLinkEventTool"
-			/>
-			<Tool
-				Name="VCLinkerTool"
-				ExecutionBucket="11"
-				AdditionalDependencies="cudart.lib"
-				OutputFile="$(OutDir)/perft_gpu.exe"
-				LinkIncremental="1"
-				AdditionalLibraryDirectories="$(CUDA_PATH)/lib/$(PlatformName);../../common/lib/$(PlatformName);"
-				GenerateDebugInformation="true"
-				ProgramDatabaseFile="$(OutDir)/perft_gpu.pdb"
-				SubSystem="1"
-				OptimizeReferences="2"
-				EnableCOMDATFolding="2"
-				RandomizedBaseAddress="1"
-				DataExecutionPrevention="0"
-				TargetMachine="1"
-			/>
-			<Tool
-				Name="VCALinkTool"
-				ExecutionBucket="12"
-			/>
-			<Tool
-				Name="VCManifestTool"
-				ExecutionBucket="13"
-			/>
-			<Tool
-				Name="VCXDCMakeTool"
-				ExecutionBucket="14"
-			/>
-			<Tool
-				Name="VCBscMakeTool"
-				ExecutionBucket="15"
-			/>
-			<Tool
-				Name="VCFxCopTool"
-				ExecutionBucket="16"
-			/>
-			<Tool
-				Name="VCPostBuildEventTool"
-				ExecutionBucket="17"
-			/>
-			<Tool
-				Name="VCAppVerifierTool"
-			/>
-		</Configuration>
-		<Configuration
 			Name="Debug|x64"
 			OutputDirectory="../../bin/win64/$(ConfigurationName)"
 			IntermediateDirectory="$(PlatformName)/$(ConfigurationName)"
@@ -306,6 +205,107 @@
 				RandomizedBaseAddress="1"
 				DataExecutionPrevention="0"
 				TargetMachine="17"
+			/>
+			<Tool
+				Name="VCALinkTool"
+				ExecutionBucket="12"
+			/>
+			<Tool
+				Name="VCManifestTool"
+				ExecutionBucket="13"
+			/>
+			<Tool
+				Name="VCXDCMakeTool"
+				ExecutionBucket="14"
+			/>
+			<Tool
+				Name="VCBscMakeTool"
+				ExecutionBucket="15"
+			/>
+			<Tool
+				Name="VCFxCopTool"
+				ExecutionBucket="16"
+			/>
+			<Tool
+				Name="VCPostBuildEventTool"
+				ExecutionBucket="17"
+			/>
+			<Tool
+				Name="VCAppVerifierTool"
+			/>
+		</Configuration>
+		<Configuration
+			Name="Release|Win32"
+			OutputDirectory="."
+			IntermediateDirectory="$(ConfigurationName)"
+			ConfigurationType="1"
+			CharacterSet="1"
+			WholeProgramOptimization="1"
+			>
+			<Tool
+				Name="VCPreBuildEventTool"
+			/>
+			<Tool
+				Name="VCCustomBuildTool"
+				ExecutionBucket="2"
+			/>
+			<Tool
+				Name="Cudart Build Rule"
+				Include="../../common/inc"
+				GenerateRelocatableDeviceCode="true"
+				Arch1="35"
+				Arch2="0"
+			/>
+			<Tool
+				Name="CUDA Linker Rule"
+				ExecutionBucket="4"
+				Arch1="35"
+				ExtraNvccOptions="cudadevrt.lib"
+			/>
+			<Tool
+				Name="VCXMLDataGeneratorTool"
+			/>
+			<Tool
+				Name="VCWebServiceProxyGeneratorTool"
+			/>
+			<Tool
+				Name="VCMIDLTool"
+			/>
+			<Tool
+				Name="VCCLCompilerTool"
+				Optimization="2"
+				EnableIntrinsicFunctions="true"
+				PreprocessorDefinitions="WIN32;NDEBUG;_CONSOLE"
+				RuntimeLibrary="2"
+				EnableFunctionLevelLinking="true"
+				UsePrecompiledHeader="0"
+				WarningLevel="3"
+				DebugInformationFormat="3"
+			/>
+			<Tool
+				Name="VCManagedResourceCompilerTool"
+			/>
+			<Tool
+				Name="VCResourceCompilerTool"
+			/>
+			<Tool
+				Name="VCPreLinkEventTool"
+			/>
+			<Tool
+				Name="VCLinkerTool"
+				ExecutionBucket="11"
+				AdditionalDependencies="cudart.lib"
+				OutputFile="$(OutDir)/perft_gpu.exe"
+				LinkIncremental="1"
+				AdditionalLibraryDirectories="$(CUDA_PATH)/lib/$(PlatformName);../../common/lib/$(PlatformName);"
+				GenerateDebugInformation="true"
+				ProgramDatabaseFile="$(OutDir)/perft_gpu.pdb"
+				SubSystem="1"
+				OptimizeReferences="2"
+				EnableCOMDATFolding="2"
+				RandomizedBaseAddress="1"
+				DataExecutionPrevention="0"
+				TargetMachine="1"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -451,10 +451,6 @@
 				>
 			</File>
 			<File
-				RelativePath=".\MoveGenerator088.h"
-				>
-			</File>
-			<File
 				RelativePath=".\MoveGeneratorBitboard.h"
 				>
 			</File>
@@ -463,6 +459,14 @@
 				>
 				<FileConfiguration
 					Name="Debug|Win32"
+					>
+					<Tool
+						Name="Cudart Build Rule"
+						Defines="WIN32"
+					/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Debug|x64"
 					>
 					<Tool
 						Name="Cudart Build Rule"
@@ -480,14 +484,6 @@
 						FastMath="true"
 						Optimization="2"
 						Runtime="2"
-						Defines="WIN32"
-					/>
-				</FileConfiguration>
-				<FileConfiguration
-					Name="Debug|x64"
-					>
-					<Tool
-						Name="Cudart Build Rule"
 						Defines="WIN32"
 					/>
 				</FileConfiguration>

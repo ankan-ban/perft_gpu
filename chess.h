@@ -118,16 +118,11 @@ enum eSquare
     A8, B8, C8, D8, E8, F8, G8, H8,
 };
 
-#define TEST_GPU_PERFT 1
 
-#if TEST_GPU_PERFT == 1
-    #ifdef __CUDACC__
-    #define CUDA_CALLABLE_MEMBER __host__ __device__
-    #else
-    #define CUDA_CALLABLE_MEMBER
-    #endif
+#ifdef __CUDACC__
+#define CUDA_CALLABLE_MEMBER __host__ __device__
 #else
-    #define CUDA_CALLABLE_MEMBER
+#define CUDA_CALLABLE_MEMBER
 #endif
 
 
@@ -394,8 +389,6 @@ public:
 
     CUDA_CALLABLE_MEMBER static void Utils::displayMoveBB(Move move) 
     {
-	    char dispString[10];
-
         uint8 r1, c1, r2, c2;
         r1 = (move.src >> 3)+1;
         c1 = (move.src) & 0x7;

@@ -1,6 +1,6 @@
 
 //#include "chess.h"
-#include "MoveGenerator088.h"
+//#include "MoveGenerator088.h"
 #include "MoveGeneratorBitboard.h"
 #include <math.h>
 
@@ -67,10 +67,6 @@ void initGPU()
 #else
     hr = cudaDeviceSetLimit(cudaLimitMallocHeapSize, 1*1024*1024*1024); // 1 GB
     printf("cudaDeviceSetLimit cudaLimitMallocHeapSize returned %d\n", hr);
-#if USE_SCATTER_ALLOC == 1
-  //init the heap
-  initHeap(512*1024*1024);
-#endif
 #endif
 
     /*        
@@ -456,7 +452,6 @@ int main()
         printf("Time taken: %g seconds, nps: %llu\n", gTime/1000.0, (uint64) ((bbMoves/gTime)*1000.0));
         */
         
-#if TEST_GPU_PERFT == 1
         // try the same thing on GPU
         HexaBitBoardPosition *gpuBoard;
         uint64 *gpu_perft;
@@ -475,10 +470,7 @@ int main()
 
         EventTimer gputime;
         gputime.start();
-        //perft_bb_gpu <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
-        //for(int i=0;i<100;i++)
-            //perft_bb_gpu_safe <<<1, 1, BLOCK_SIZE * sizeof(uint32)>>> (gpuBoard, gpu_perft, depth, 1);
-            perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
         gputime.stop();
         if (cudaGetLastError() < 0)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
@@ -496,7 +488,6 @@ int main()
         cudaFree(gpuBoard);
         cudaFree(gpu_perft);
         cudaFree(serial_perft_stack);
-#endif
     }
 
 #if USE_PREALLOCATED_MEMORY == 1
