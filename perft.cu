@@ -392,10 +392,10 @@ int main()
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
 
     // no bug bug till depth 7
-    Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
+    // Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
 
     // No bug till depth 6!
-    //Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
+    Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
 
     // No bug till depth 7!
     // Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
@@ -410,7 +410,7 @@ int main()
     // no bug till depth 7
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
 
-    //Utils::readFENString("rnb1kbnr/pp1pp1pp/1q3p2/2p5/3P4/N4P2/PPP1P1PP/R1BQKBNR w KQkq - 2 4", &testBoard); // temp test
+    // Utils::readFENString("r1b1kbnr/pppp1ppp/2n1p3/6q1/6Q1/2N1P3/PPPP1PPP/R1B1KBNR w KQkq - 4 4", &testBoard); // temp test
 
     
     /*
@@ -430,7 +430,7 @@ int main()
     uint32 launchDepth = estimateLaunchDepth(&testBB);
 
     int minDepth = 1;
-    int maxDepth = 10;
+    int maxDepth = 7;
 
     if (maxDepth < launchDepth)
         launchDepth = maxDepth;

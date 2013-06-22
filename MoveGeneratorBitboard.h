@@ -18,8 +18,12 @@ __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;
 
 
-// use fancy warp wide ballot/popc to coalesce memory writes for moves
-#define OPTIMIZE_BOARD_STORES 0
+// use __shfl to improve memory colaesing when writing board pointers
+// improves performance by only 1% :-/
+#define USE_COLAESED_WRITES_FOR_MOVELIST_SCAN 1
+
+// use fancy warp wide ballot/popc to coalesce memory writes for moves (buggy.. doesn't work)
+#define OPTIMIZE_MOVE_STORES 0
 
 // use trove library coalesced_ptr (that makes use of SHFL instruction) to optimize AOS reads
 // reduces performance by a small amount :-/
@@ -1250,7 +1254,7 @@ public:
     {
         CMove move(from, to, flags);
 
-#if defined(__CUDA_ARCH__) && OPTIMIZE_BOARD_STORES == 1 
+#if defined(__CUDA_ARCH__) && OPTIMIZE_MOVE_STORES == 1 
         uint32 activeThreadMaskInWarp = __ballot(true);
 
         uint32 laneIdx = threadIdx.x & 0x1F;
@@ -3527,7 +3531,7 @@ __global__ void generate_moves_single_level(HexaBitBoardPosition *positions, CMo
     HexaBitBoardPosition pos = positions[index];
 #endif
 
-#if OPTIMIZE_BOARD_STORES == 1
+#if OPTIMIZE_MOVE_STORES == 1
     // one pointer per warp
     // storing the starting address of the newBoard array where the warp will write the boards
     __shared__ volatile uint32 warpNewBoardPointers[BLOCK_SIZE / 32];
@@ -3761,20 +3765,59 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition *position, uint64 *glob
     uint32 baseOffset = shMem.movesForThread[threadIdx.x] - localMoveCounter;
     HexaBitBoardPosition **boardPointers = shMem.boardPointers;
 
+#if USE_COLAESED_WRITES_FOR_MOVELIST_SCAN == 1
+    uint32 laneIdx = threadIdx.x & 0x1F;
+    for (int curLane = 0; curLane < 32; curLane++)
+    {
+        int curNMoves         =           __shfl((int) nMoves, curLane);
+        int curMoveListOffset =           __shfl((int) moveListOffset, curLane);
+        int curBaseOffset     =           __shfl((int) baseOffset, curLane);
+        HexaBitBoardPosition *curChildBoards = (HexaBitBoardPosition *) __shfl((int) childBoards, curLane);
+        for (int i = 0; i < curNMoves; i++)
+        {
+            int nChildMoves;
+            if (laneIdx == 0)
+            {
+                nChildMoves         = childMoveCounts[curMoveListOffset + i];
+                childMoveCounts[curMoveListOffset + i] = (uint32) (secondLevelChildMoves + curBaseOffset);
+            }
+            nChildMoves = __shfl(nChildMoves, 0);
+
+            // uint32 nChildMoves = childMoveCounts[curMoveListOffset + i];
+            HexaBitBoardPosition *currentBoardPointer = &curChildBoards[i];
+
+            uint32 curOffset = 0;
+            while (curOffset < nChildMoves)
+            {
+                if (curOffset + laneIdx < nChildMoves)
+                    boardPointers[curBaseOffset + curOffset + laneIdx] = currentBoardPointer;
+
+                curOffset += 32;
+            }
+
+            curBaseOffset += nChildMoves;
+        }
+    }
+
+#else
     // TODO: this operation is expensive
     // fix this by colaesing memory reads/writes
+
     for (int i = 0; i < nMoves; i++)
     {
-        uint32 temp = childMoveCounts[moveListOffset + i];
+        uint32 nChildMoves = childMoveCounts[moveListOffset + i];
         HexaBitBoardPosition *currentBoardPointer = &childBoards[i];
-        for (int j=0; j < temp; j++)
+
+        for (int j=0; j < nChildMoves; j++)
         {
             // this is about 2000 writes for each thread!
             boardPointers[baseOffset + j] = currentBoardPointer;
         }
+
         childMoveCounts[moveListOffset + i] = (uint32) (secondLevelChildMoves + baseOffset);
-        baseOffset += temp;
+        baseOffset += nChildMoves;
     }
+#endif
 
     __syncthreads();
     // childMoveCounts now have the exclusive scan - containing the addresses to put moves on
