@@ -378,7 +378,7 @@ uint32 estimateLaunchDepth(HexaBitBoardPosition *pos)
     return depth;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
 
@@ -395,20 +395,28 @@ int main()
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
     //Utils::readFENString("r1b1kbnr/pppp1ppp/2n1p3/6q1/6Q1/2N1P3/PPPP1PPP/R1B1KBNR w KQkq - 4 4", &testBoard); // temp test
 
-
-    printf("\nEnter FEN String: \n");
+    int minDepth = 1;
+    int maxDepth = 7;
     char fen[1024];
-    gets(fen);
+    if (argc == 3)
+    {
+        strcpy(fen, argv[1]);
+        maxDepth = atoi(argv[2]);
+    }
+    else
+    {
+        printf("\nEnter FEN String: \n");
+        gets(fen);
+        printf("\nEnter max depth: ");
+        scanf("%d", &maxDepth);
+    }
+
     if (strlen(fen) > 5)
     {
         Utils::readFENString(fen, &testBoard);
     }
     Utils::dispBoard(&testBoard);
 
-    int minDepth = 1;
-    int maxDepth = 7;
-    printf("\nEnter max depth: ");
-    scanf("%d", &maxDepth);
     
 
     HexaBitBoardPosition testBB;
