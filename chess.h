@@ -405,7 +405,6 @@ public:
                 c2+'a', 
                 r2);
 
-        //printf(dispString);
     }
 
     static void board088ToChar(char board[8][8], BoardPosition *pos);

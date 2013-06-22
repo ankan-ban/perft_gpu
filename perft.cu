@@ -386,36 +386,30 @@ int main()
     MoveGeneratorBitboard::init();
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
-
-    // no bug bug till depth 7
-    // Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
-
-    // No bug till depth 6!
-    Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
-
-    // No bug till depth 7!
-    // Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
-
-    // no bug till depth 6
+    Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
+    //Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
+    //Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
     //Utils::readFENString("r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1", &testBoard); // position 4
     //Utils::readFENString("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", &testBoard); // mirror of position 4
-    
-    // no bug till depth 6!
     //Utils::readFENString("rnbqkb1r/pp1p1ppp/2p5/4P3/2B5/8/PPP1NnPP/RNBQK2R w KQkq - 0 6", &testBoard);   // position 5
-
-    // no bug till depth 7
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
+    //Utils::readFENString("r1b1kbnr/pppp1ppp/2n1p3/6q1/6Q1/2N1P3/PPPP1PPP/R1B1KBNR w KQkq - 4 4", &testBoard); // temp test
 
-    // Utils::readFENString("r1b1kbnr/pppp1ppp/2n1p3/6q1/6Q1/2N1P3/PPPP1PPP/R1B1KBNR w KQkq - 4 4", &testBoard); // temp test
 
-    
-    /*
     printf("\nEnter FEN String: \n");
     char fen[1024];
     gets(fen);
-    Utils::readFENString(fen, &testBoard); // start.. 20 positions
+    if (strlen(fen) > 5)
+    {
+        Utils::readFENString(fen, &testBoard);
+    }
     Utils::dispBoard(&testBoard);
-    */
+
+    int minDepth = 1;
+    int maxDepth = 7;
+    printf("\nEnter max depth: ");
+    scanf("%d", &maxDepth);
+    
 
     HexaBitBoardPosition testBB;
     Utils::board088ToHexBB(&testBB, &testBoard);
@@ -424,9 +418,6 @@ int main()
     // launchDepth is the depth at which the driver kernel launches the work kernels
     // we decide launch depth based by estimating memory requirment of the work kernel that would be launched.
     uint32 launchDepth = estimateLaunchDepth(&testBB);
-
-    int minDepth = 1;
-    int maxDepth = 7;
 
     if (maxDepth < launchDepth)
         launchDepth = maxDepth;
