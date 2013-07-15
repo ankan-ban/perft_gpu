@@ -13,6 +13,9 @@ typedef unsigned short     uint16;
 typedef unsigned int       uint32;
 typedef unsigned long long uint64;
 
+#define HI(x) ((uint32)((x)>>32))
+#define LO(x) ((uint32)(x))
+
 #define CT_ASSERT(expr) \
 int __static_assert(int static_assert_failed[(expr)?1:-1])
 

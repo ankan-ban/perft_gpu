@@ -427,6 +427,9 @@ int main(int argc, char *argv[])
     // we decide launch depth based by estimating memory requirment of the work kernel that would be launched.
     uint32 launchDepth = estimateLaunchDepth(&testBB);
 
+
+    launchDepth = min(launchDepth, 11); // don't go too high
+
     if (maxDepth < launchDepth)
         launchDepth = maxDepth;
 

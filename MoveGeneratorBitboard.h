@@ -1,5 +1,7 @@
 #include "chess.h"
+#include "FancyMagics.h"
 #include <intrin.h>
+#include <time.h>
 
 #define DEBUG_PRINT_MOVES 0
 #if DEBUG_PRINT_MOVES == 1
@@ -46,13 +48,19 @@ __device__ uint32  preAllocatedMemoryUsed;
 #define USE_IN_BETWEEN_LUT 1
     
 // use lookup table for king moves
-#define USE_KING_LUT 0
+#define USE_KING_LUT 1
 
 // use lookup table for knight moves
-#define USE_KNIGHT_LUT 0
+#define USE_KNIGHT_LUT 1
 
-// use lookup table (magics) for sliding moves (TODO)
+// use lookup table (magics) for sliding moves
 #define USE_SLIDING_LUT 0
+
+// use fancy fixed-shift version - ~ 800 KB lookup tables
+// (setting this to 0 enables plain magics - with 2.3 MB lookup table)
+// plain magics is a bit faster at least for perft (on core 2 duo)
+// fancy magics is clearly faster on more recent processors (ivy bridge)
+#define USE_FANCY_MAGICS 1
 
 // bit board constants
 #define C64(constantU64) constantU64##ULL
@@ -78,8 +86,10 @@ __device__ uint32  preAllocatedMemoryUsed;
 #define FILEG     C64(0x4040404040404040)
 #define FILEH     C64(0x8080808080808080)
 
-#define DIAGONAL_A1H8  C64(0x8040201008040201)
-#define DIAGONAL_A8H1  C64(0x0102040810204080)
+#define DIAGONAL_A1H8   C64(0x8040201008040201)
+#define DIAGONAL_A8H1   C64(0x0102040810204080)
+
+#define CENTRAL_SQUARES C64(0x007E7E7E7E7E7E00)
 
 // used for castling checks
 #define F1G1      C64(0x60)
@@ -173,6 +183,25 @@ static uint64 KingAttacks    [64];
 static uint64 KnightAttacks  [64];
 static uint64 pawnAttacks[2] [64];
 
+// magic lookup tables
+// plain magics (Fancy magic lookup tables in FancyMagics.h)
+#define ROOK_MAGIC_BITS    12
+#define BISHOP_MAGIC_BITS  9
+
+uint64 rookMagics            [64];
+uint64 bishopMagics          [64];
+
+// same as RookAttacks and BishopAttacks, but corner bits masked off
+static uint64 RookAttacksMasked   [64];
+static uint64 BishopAttacksMasked [64];
+
+uint64 rookMagicAttackTables      [64][1 << ROOK_MAGIC_BITS  ];    // 2 MB
+uint64 bishopMagicAttackTables    [64][1 << BISHOP_MAGIC_BITS];    // 256 KB
+
+uint64 findRookMagicForSquare(int square, uint64 magicAttackTable[], uint64 magic = 0);
+uint64 findBishopMagicForSquare(int square, uint64 magicAttackTable[], uint64 magic = 0);
+
+
 // gpu version of the above data structures
 // accessed for read only using __ldg() function
 
@@ -189,6 +218,24 @@ __device__ static uint64 gQueenAttacks   [64];
 __device__ static uint64 gKingAttacks    [64];
 __device__ static uint64 gKnightAttacks  [64];
 __device__ static uint64 gpawnAttacks[2] [64];
+
+
+// Magical Tables
+// same as RookAttacks and BishopAttacks, but corner bits masked off
+__device__ static uint64 gRookAttacksMasked   [64];
+__device__ static uint64 gBishopAttacksMasked [64];
+
+// plain magics
+__device__ static uint64 gRookMagics                [64];
+__device__ static uint64 gBishopMagics              [64];
+__device__ static uint64 gRookMagicAttackTables     [64][1 << ROOK_MAGIC_BITS  ];    // 2 MB
+__device__ static uint64 gBishopMagicAttackTables   [64][1 << BISHOP_MAGIC_BITS];    // 256 KB
+
+// fancy magics (cpu versions in FancyMagics.h)
+__device__ static uint64 g_fancy_magic_lookup_table[97264];
+__device__ static FancyMagicEntry g_bishop_magics_fancy[64];
+__device__ static FancyMagicEntry g_rook_magics_fancy[64];
+
 
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetweenLUT(uint8 sq1, uint8 sq2)
 {
@@ -244,10 +291,96 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
 #endif
 }
 
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacksMasked(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gBishopAttacksMasked[sq]);
+#else
+    return BishopAttacksMasked[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacksMasked(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gRookAttacksMasked[sq]);
+#else
+    return RookAttacksMasked[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookMagics(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gRookMagics[sq]);
+#else
+    return rookMagics[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopMagics(uint8 sq)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gBishopMagics[sq]);
+#else
+    return bishopMagics[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookMagicAttackTables(uint8 sq, int index)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gRookMagicAttackTables[sq][index]);
+#else
+    return rookMagicAttackTables[sq][index];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopMagicAttackTables(uint8 sq, int index)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&gBishopMagicAttackTables[sq][index]);
+#else
+    return bishopMagicAttackTables[sq][index];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline uint64 sq_fancy_magic_lookup_table(int index)
+{
+#ifdef __CUDA_ARCH__
+    return __ldg(&g_fancy_magic_lookup_table[index]);
+#else
+    return fancy_magic_lookup_table[index];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline FancyMagicEntry sq_bishop_magics_fancy(int sq)
+{
+#ifdef __CUDA_ARCH__
+    FancyMagicEntry op;
+    op.factor   = __ldg(&g_bishop_magics_fancy[sq].factor);
+    op.position = __ldg(&g_bishop_magics_fancy[sq].position);
+    return op;
+#else
+    return bishop_magics_fancy[sq];
+#endif
+}
+
+CUDA_CALLABLE_MEMBER __forceinline FancyMagicEntry sq_rook_magics_fancy(int sq)
+{
+#ifdef __CUDA_ARCH__
+    FancyMagicEntry op;
+    op.factor   = __ldg(&g_rook_magics_fancy[sq].factor);
+    op.position = __ldg(&g_rook_magics_fancy[sq].position);
+    return op;
+#else
+    return rook_magics_fancy[sq];
+#endif
+}
 
 class MoveGeneratorBitboard
 {
-private:
+public:
 
     // move the bits in the bitboard one square in the required direction
 
@@ -511,7 +644,7 @@ private:
     // attacks by pieces of given type
     // pro - empty squares
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacks(uint64 bishops, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacksKoggeStone(uint64 bishops, uint64 pro)
     {
         return northEastAttacks(bishops, pro) |
                northWestAttacks(bishops, pro) |
@@ -519,7 +652,7 @@ private:
                southWestAttacks(bishops, pro) ;
     }
 
-    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rooks, uint64 pro)
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacksKoggeStone(uint64 rooks, uint64 pro)
     {
         return northAttacks(rooks, pro) |
                southAttacks(rooks, pro) |
@@ -527,11 +660,83 @@ private:
                westAttacks (rooks, pro) ;
     }
 
+
+#if USE_SLIDING_LUT == 1
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 bishopAttacks(uint64 bishop, uint64 pro)
+    {
+        uint8 square = bitScan(bishop);
+        uint64 occ = (~pro) & sqBishopAttacksMasked(square);
+
+#if USE_FANCY_MAGICS == 1
+        FancyMagicEntry magicEntry = sq_bishop_magics_fancy(square);
+        uint64 index = (magicEntry.factor * occ) >> (64 - BISHOP_MAGIC_BITS);
+        return sq_fancy_magic_lookup_table(magicEntry.position + index);
+#else
+        uint64 magic = sqBishopMagics(square);
+        uint64 index = (magic * occ) >> (64 - BISHOP_MAGIC_BITS);
+        return sqBishopMagicAttackTables(square, index);
+#endif
+    }
+
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rook, uint64 pro)
+    {
+        uint8 square = bitScan(rook);
+        uint64 occ = (~pro) & sqRookAttacksMasked(square);
+
+#if USE_FANCY_MAGICS == 1
+        FancyMagicEntry magicEntry = sq_rook_magics_fancy(square);
+        uint64 index = (magicEntry.factor * occ) >> (64 - ROOK_MAGIC_BITS);
+        return sq_fancy_magic_lookup_table(magicEntry.position + index);
+#else
+        uint64 magic = sqRookMagics(square);
+        uint64 index = (magic * occ) >> (64 - ROOK_MAGIC_BITS);
+        return sqRookMagicAttackTables(square, index);
+#endif
+    }
+
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 multiBishopAttacks(uint64 bishops, uint64 pro)
+    {
+        uint64 attacks = 0;
+        while(bishops)
+        {
+            uint64 bishop = getOne(bishops);
+            attacks |= bishopAttacks(bishop, pro);
+            bishops ^= bishop;
+        }
+
+        return attacks;
+    }
+
+    CUDA_CALLABLE_MEMBER __forceinline static uint64 multiRookAttacks(uint64 rooks, uint64 pro)
+    {
+        uint64 attacks = 0;
+        while(rooks)
+        {
+            uint64 rook = getOne(rooks);
+            attacks |= rookAttacks(rook, pro);
+            rooks ^= rook;
+        }
+
+        return attacks;
+    }
+#else
+// kogge stone handles multiple attackers automatically
+
+#define bishopAttacks bishopAttacksKoggeStone
+#define rookAttacks   rookAttacksKoggeStone
+
+#define multiBishopAttacks bishopAttacksKoggeStone
+#define multiRookAttacks   rookAttacksKoggeStone
+#endif
+
+// not used
+#if 0
     CUDA_CALLABLE_MEMBER __forceinline static uint64 queenAttacks(uint64 queens, uint64 pro)
     {
         return rookAttacks  (queens, pro) |
                bishopAttacks(queens, pro) ;
     }
+#endif
 
     CUDA_CALLABLE_MEMBER __forceinline static uint64 kingAttacks(uint64 kingSet) 
     {
@@ -573,8 +778,6 @@ private:
     }
 
 
-public:
-
     // finds the squares in between the two given squares
     // taken from 
     // http://chessprogramming.wikispaces.com/Square+Attacked+By#Legality Test-In Between-Pure Calculation
@@ -590,10 +793,10 @@ public:
         btwn  = (m1 << sq1) ^ (m1 << sq2);
         file  =   (sq2 & 7) - (sq1   & 7);
         rank  =  ((sq2 | 7) -  sq1) >> 3 ;
-        line  =      (   (file  & 0xff) - 1) & a2a7; // a2a7 if same file
-        line += 2 * ((   (rank  & 0xff) - 1) >> 58); // b1g1 if same rank
-        line += (((rank - file) & 0xff) - 1) & b2g7; // b2g7 if same diagonal
-        line += (((rank + file) & 0xff) - 1) & h1b7; // h1b7 if same antidiag
+        line  =      (   (file  &  7) - 1) & a2a7; // a2a7 if same file
+        line += 2 * ((   (rank  &  7) - 1) >> 58); // b1g1 if same rank
+        line += (((rank - file) & 15) - 1) & b2g7; // b2g7 if same diagonal
+        line += (((rank + file) & 15) - 1) & h1b7; // h1b7 if same antidiag
         line *= btwn & -btwn; // mul acts like shift by smaller square
         return line & btwn;   // return the bits on that line inbetween
     }
@@ -643,7 +846,7 @@ public:
 #if USE_IN_BETWEEN_LUT == 1
         return sqsInBetweenLUT(sq1, sq2);
 #else
-        return squaresInBetween(min(sq1, sq2), max(sq1, sq2));
+        return squaresInBetween(sq1, sq2);
 #endif
     }
 
@@ -694,27 +897,98 @@ public:
                 Line[i][j] = squaresInLine(i, j);
             }
 
+
+        // initialize magic lookup tables
+#if USE_SLIDING_LUT == 1
+        srand (time(NULL));
+        for (int square = A1; square <= H8; square++)
+        {
+            uint64 thisSquare = BIT(square);
+            uint64 mask    = sqRookAttacks(square) & (~thisSquare);
+
+            // mask off squares that don't matter
+            if ((thisSquare & RANK1) == 0)
+                mask &= ~RANK1;
+
+            if ((thisSquare & RANK8) == 0)
+                mask &= ~RANK8;
+
+            if ((thisSquare & FILEA) == 0)
+                mask &= ~FILEA;
+
+            if ((thisSquare & FILEH) == 0)
+                mask &= ~FILEH;
+            
+            RookAttacksMasked[square] = mask;
+
+            mask = sqBishopAttacks(square)  & (~thisSquare) & CENTRAL_SQUARES;
+            BishopAttacksMasked[square] = mask;
+#if USE_FANCY_MAGICS != 1
+            rookMagics  [square] = findRookMagicForSquare  (square, rookMagicAttackTables  [square]);
+            bishopMagics[square] = findBishopMagicForSquare(square, bishopMagicAttackTables[square]);
+#endif
+        }
+
+        // initialize fancy magic lookup table
+        for (int square = A1; square <= H8; square++)
+        {
+            uint64 rookMagic = findRookMagicForSquare  (square, &fancy_magic_lookup_table[rook_magics_fancy[square].position], rook_magics_fancy[square].factor);
+            assert(rookMagic == rook_magics_fancy[square].factor);
+
+            uint64 bishopMagic = findBishopMagicForSquare  (square, &fancy_magic_lookup_table[bishop_magics_fancy[square].position], bishop_magics_fancy[square].factor);
+            assert(bishopMagic == bishop_magics_fancy[square].factor);
+        }
+#endif        
+
         // copy all the lookup tables from CPU's memory to GPU memory
         cudaError_t err = cudaMemcpyToSymbol(gBetween, Between, sizeof(Between));
-        printf("For copying between table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));
+        if (err != S_OK) printf("For copying between table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));
 
         err = cudaMemcpyToSymbol(gLine, Line, sizeof(Line));
-        printf("For copying line table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying line table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
 
         err = cudaMemcpyToSymbol(gRookAttacks, RookAttacks, sizeof(RookAttacks));
-        printf("For copying RookAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying RookAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
 
         err = cudaMemcpyToSymbol(gBishopAttacks, BishopAttacks, sizeof(BishopAttacks));
-        printf("For copying BishopAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying BishopAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
         
         err = cudaMemcpyToSymbol(gQueenAttacks, QueenAttacks, sizeof(QueenAttacks));
-        printf("For copying QueenAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying QueenAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
 
         err = cudaMemcpyToSymbol(gKnightAttacks, KnightAttacks, sizeof(KnightAttacks));
-        printf("For copying KnightAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying KnightAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
 
         err = cudaMemcpyToSymbol(gKingAttacks, KingAttacks, sizeof(KingAttacks));
-        printf("For copying KingAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        if (err != S_OK) printf("For copying KingAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        // Copy magical tables
+        err = cudaMemcpyToSymbol(gRookAttacksMasked, RookAttacksMasked, sizeof(RookAttacksMasked));
+        if (err != S_OK) printf("For copying RookAttacksMasked table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gBishopAttacksMasked, BishopAttacksMasked , sizeof(BishopAttacksMasked));
+        if (err != S_OK) printf("For copying BishopAttacksMasked  table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        
+        err = cudaMemcpyToSymbol(gRookMagics, rookMagics, sizeof(rookMagics));
+        if (err != S_OK) printf("For copying rookMagics  table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gBishopMagics, bishopMagics, sizeof(bishopMagics));
+        if (err != S_OK) printf("For copying bishopMagics table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gRookMagicAttackTables, rookMagicAttackTables, sizeof(rookMagicAttackTables));
+        if (err != S_OK) printf("For copying RookMagicAttackTables, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(gBishopMagicAttackTables, bishopMagicAttackTables, sizeof(bishopMagicAttackTables));
+        if (err != S_OK) printf("For copying bishopMagicAttackTables, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(g_fancy_magic_lookup_table, fancy_magic_lookup_table, sizeof(fancy_magic_lookup_table));
+        if (err != S_OK) printf("For copying fancy_magic_lookup_table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(g_bishop_magics_fancy, bishop_magics_fancy, sizeof(bishop_magics_fancy));
+        if (err != S_OK) printf("For copying bishop_magics_fancy, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(g_rook_magics_fancy, rook_magics_fancy, sizeof(rook_magics_fancy));
+        if (err != S_OK) printf("For copying rook_magics_fancy, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
 
     }
 
@@ -782,10 +1056,10 @@ public:
         attacked |= knightAttacks(enemyKnights);
         
         // 3. bishop attacks
-        attacked |= bishopAttacks(enemyBishops, emptySquares | myKing); // squares behind king are also under threat (in the sense that king can't go there)
+        attacked |= multiBishopAttacks(enemyBishops, emptySquares | myKing); // squares behind king are also under threat (in the sense that king can't go there)
 
         // 4. rook attacks
-        attacked |= rookAttacks(enemyRooks, emptySquares | myKing); // squares behind king are also under threat
+        attacked |= multiRookAttacks(enemyRooks, emptySquares | myKing); // squares behind king are also under threat
 
         // 5. King attacks
         attacked |= kingAttacks(enemyKing);
@@ -801,13 +1075,7 @@ public:
     // adds the given board to list and increments the move counter
     CUDA_CALLABLE_MEMBER __forceinline static void addMove(uint32 *nMoves, HexaBitBoardPosition **newPos, HexaBitBoardPosition *newBoard)
     {
-#if defined(__CUDA_ARCH__) && 0
-            trove::coalesced_ptr<HexaBitBoardPosition> p(*newPos);
-            p[0] = *newBoard;
-            //trove::store(*newBoard, *newPos);
-#else
-            **newPos = *newBoard;
-#endif	
+        **newPos = *newBoard;
         (*newPos)++;
         (*nMoves)++;
     }
@@ -2985,6 +3253,165 @@ public:
 };
 
 
+// random generators and basic idea of finding magics taken from:
+// http://chessprogramming.wikispaces.com/Looking+for+Magics 
+
+uint64 random_uint64() 
+{
+      uint64 u1, u2, u3, u4;
+      u1 = (uint64)(rand()) & 0xFFFF; u2 = (uint64)(rand()) & 0xFFFF;
+      u3 = (uint64)(rand()) & 0xFFFF; u4 = (uint64)(rand()) & 0xFFFF;
+      return u1 | (u2 << 16) | (u3 << 32) | (u4 << 48);
+}
+
+uint64 random_uint64_sparse() 
+{
+    return random_uint64() & random_uint64() & random_uint64();
+} 
+
+// get i'th combo mask 
+uint64 getOccCombo(uint64 mask, uint64 i)
+{
+    uint64 op = 0;
+    while(i)
+    {
+        int bit = i % 2;
+        uint64 opBit = MoveGeneratorBitboard::getOne(mask);
+        mask &= ~opBit;
+        op |= opBit * bit;
+        i = i >> 1;
+    }
+
+    return op;
+}
+
+uint64 findMagicCommon(uint64 occCombos[], uint64 attacks[], uint64 attackTable[], int numCombos, int bits, uint64 preCalculatedMagic = 0)
+{
+    uint64 magic = 0;
+    while(1)
+    {
+        if (preCalculatedMagic)
+        {
+            magic = preCalculatedMagic;
+        }
+        else
+        {
+            for (int i=0; i < (1 << bits); i++)
+            {
+                attackTable[i] = 0; // unused entry
+            }
+
+            magic = random_uint64_sparse();
+            //magic = random_uint64();
+        }
+
+        // try all possible occupancy combos and check for collisions
+        int i = 0;
+        for (i = 0; i < numCombos; i++)
+        {
+            uint64 index = (magic * occCombos[i]) >> (64 - bits);
+            if (preCalculatedMagic || attackTable[index] == 0)
+            {
+                attackTable[index] = attacks[i];
+            }
+            else
+            {
+                // mismatching entry already found
+                if (attackTable[index] != attacks[i])
+                    break;
+            }
+        }
+
+        if (i == numCombos)
+            break;
+        else
+            assert(preCalculatedMagic == 0);
+    }
+    return magic;
+}
+
+uint64 findRookMagicForSquare(int square, uint64 magicAttackTable[], uint64 preCalculatedMagic)
+{
+    uint64 mask = RookAttacksMasked[square];
+    uint64 thisSquare = BIT(square);
+
+    int numBits   =  popCount(mask);
+    int numCombos = (1 << numBits);
+    
+    uint64 occCombos[4096];     // the occupancy bits for each combination (actually permutation)
+    uint64 attacks[4096];       // attacks for every combo (calculated using kogge stone)
+
+    for (int i=0; i < numCombos; i++)
+    {
+        occCombos[i] = getOccCombo(mask, i);
+        attacks[i]   = MoveGeneratorBitboard::rookAttacksKoggeStone(thisSquare, ~occCombos[i]);
+    }
+
+    return findMagicCommon(occCombos, attacks, magicAttackTable, numCombos, ROOK_MAGIC_BITS, preCalculatedMagic);
+
+}
+
+uint64 findBishopMagicForSquare(int square, uint64 magicAttackTable[], uint64 preCalculatedMagic)
+{
+    uint64 mask = BishopAttacksMasked[square];
+    uint64 thisSquare = BIT(square);
+
+    int numBits   =  popCount(mask);
+    int numCombos = (1 << numBits);
+    
+    uint64 occCombos[4096];     // the occupancy bits for each combination (actually permutation)
+    uint64 attacks[4096];       // attacks for every combo (calculated using kogge stone)
+
+    for (int i=0; i < numCombos; i++)
+    {
+        occCombos[i] = getOccCombo(mask, i);
+        attacks[i]   = MoveGeneratorBitboard::bishopAttacksKoggeStone(thisSquare, ~occCombos[i]);
+    }
+
+    return findMagicCommon(occCombos, attacks, magicAttackTable, numCombos, BISHOP_MAGIC_BITS, preCalculatedMagic);
+}
+
+// only for testing
+#if 0
+uint64 rookMagicAttackTables[64][1 << ROOK_MAGIC_BITS];
+uint64 bishopMagicAttackTables[64][1 << BISHOP_MAGIC_BITS];
+
+void findBishopMagics()
+{
+    printf("\n\nBishop Magics: ...");
+    for (int square = A1; square <= H8; square++)
+    {
+        uint64 magic = findBishopMagicForSquare(square, bishopMagicAttackTables[square]);
+        printf("\nSquare: %c%c, Magic: %X%X", 'A' + (square%8), '1' + (square / 8), HI(magic), LO(magic));
+    }
+
+}
+
+void findRookMagics()
+{
+
+    printf("\n\nRook Magics: ...");
+    //int square = A8;
+    for (int square = A1; square <= H8; square++)
+    {
+        uint64 magic = findRookMagicForSquare(square, rookMagicAttackTables[square]);
+        printf("\nSquare: %c%c, Magic: %X%X", 'A' + (square%8), '1' + (square / 8), HI(magic), LO(magic));
+    }
+
+}
+
+
+void findMagics()
+{
+    srand (time(NULL));
+
+    findBishopMagics();
+    findRookMagics();
+}
+#endif
+
+
+
 
 
 // perft counter function. Returns perft of the given board for given depth
@@ -3638,7 +4065,7 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition *position, uint64 *glob
 
 #if USE_COLAESED_WRITES_FOR_MOVELIST_SCAN == 1
     // this is only a very little bit faster than (much) simpler approach below
-    // maybe try internal-expand algorithm (http://nvlabs.github.io/moderngpu/intervalmove.html)
+    // maybe try interval-expand algorithm (http://nvlabs.github.io/moderngpu/intervalmove.html)
 
     uint32 laneIdx = threadIdx.x & 0x1F;
     for (int curLane = 0; curLane < WARP_SIZE; curLane++)
@@ -3703,7 +4130,7 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition *position, uint64 *glob
         uint32 nBlocks = (allMoves - 1) / BLOCK_SIZE + 1;
         generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(childBoards, (CMove **) childMoveCounts, allMoves);
 
-        // now we have all second level generated moves in secondLevelChildBoards .. launch a kernel at depth - 2 to recurse
+        // now we have all second level generated moves in secondLevelChildBoards .. launch a kernel at depth - 2 to make the moves and count leaves
         nBlocks = (allSecondLevelMoves - 1) / BLOCK_SIZE + 1;
 
         makeMove_and_perft_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>> (boardPointers, secondLevelChildMoves, globalPerftCounter, allSecondLevelMoves);
