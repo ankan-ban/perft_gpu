@@ -5,8 +5,18 @@ unsigned long long fancy_magic_lookup_table[97264];
 
 struct FancyMagicEntry
 {
-    unsigned long long factor;
-    int position;
+    union
+    {
+        struct {
+            unsigned long long factor;  // the magic factor
+            int position;               // position in the main lookup table (of 97264 entries)
+
+            int offset;                 // position in the byte lookup table (only used when byte lookup is enabled)
+        };
+#ifdef __CUDA_ARCH__
+        uint4 data;
+#endif
+    };
 };
 
 FancyMagicEntry bishop_magics_fancy[64] =
@@ -144,3 +154,13 @@ FancyMagicEntry rook_magics_fancy[64] =
     { 0x0003ffdeff7fbdecull,  44989 },
     { 0x0001ffff99ffab2full,  21479 }
 };
+
+
+
+// byte lookup version of the above table
+// 'inspired from': http://chessprogramming.wikispaces.com/Magic+Bitboards#Implementations-Byte Lookup
+// smallest set of magic tables ( < 150 KB including everything)? 
+
+unsigned char fancy_byte_magic_lookup_table[97264];  // 95 KB
+unsigned long long fancy_byte_RookLookup   [4900] ;  // 39 K
+unsigned long long fancy_byte_BishopLookup [1428] ;  // 11 K
