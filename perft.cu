@@ -4,7 +4,7 @@
 #include "MoveGeneratorBitboard.h"
 #include <math.h>
 
-
+#define PERFT_VERIF_MODE 0
 
 class EventTimer {
 public:
@@ -366,16 +366,29 @@ uint32 estimateLaunchDepth(HexaBitBoardPosition *pos)
         return 5;
     }
         
-    printf("\nEstimated branching factor: %g\n", branchingFactor);
+    //printf("\nEstimated branching factor: %g\n", branchingFactor);
 
     float memLimit = PREALLOCATED_MEMORY_SIZE / 2;  // be conservative as the branching factor can increase later
 
     // estimated depth is log of memLimit in base 'branchingFactor'
     uint32 depth = log(memLimit) / log (branchingFactor);
 
-    printf("\nEstimated launch depth: %d\n", depth);
+    //printf("\nEstimated launch depth: %d\n", depth);
 
     return depth;
+}
+
+void removeNewLine(char *str)
+{
+    while(*str)
+    {
+        if (*str == '\n' || *str == '\r')
+        {
+            *str = 0;
+            break;
+        }
+        str++;
+    }
 }
 
 int main(int argc, char *argv[])
@@ -384,6 +397,90 @@ int main(int argc, char *argv[])
 
     initGPU();
     MoveGeneratorBitboard::init();
+
+#if PERFT_VERIF_MODE == 1
+    FILE *fpInp;    // input file
+    FILE *fpOp;     // output file
+    int startRecord      = 0;
+    int recordsToProcess = 1000000;
+    int i = 0;
+    if (argc !=5)
+    {
+        printf("usage: perft14_verif <inFile> <outFile> <startRecord> <recordsToProcess>\n");
+        return 0;
+    }
+
+    fpInp = fopen(argv[1], "r+");
+    fpOp  = fopen(argv[2], "a+");
+    startRecord = atoi(argv[3]);
+    recordsToProcess = atoi(argv[4]);
+    printf("\nStart Record: %d, records to process: %d\n", startRecord, recordsToProcess);
+
+    cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 7);
+    HexaBitBoardPosition *gpuBoard;
+    uint64 *gpu_perft;
+    HexaBitBoardPosition *serial_perft_stack;
+    cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
+    cudaMalloc(&serial_perft_stack, sizeof(HexaBitBoardPosition) * MAX_GAME_LENGTH * MAX_MOVES);
+    cudaMalloc(&gpu_perft, sizeof(uint64));
+
+    LARGE_INTEGER count1, count2, time, freq;
+    QueryPerformanceCounter(&count1);
+    QueryPerformanceFrequency (&freq);
+
+    char line[1024];
+    int j=0;
+    while(fgets(line,1024,fpInp))
+    {
+        if (j++ < startRecord) continue;
+
+        Utils::readFENString(line, &testBoard);
+        HexaBitBoardPosition testBB;
+
+        //Utils::dispBoard(&testBoard);
+        printf("\n%s", line);
+
+        Utils::board088ToHexBB(&testBB, &testBoard);
+        uint32 launchDepth = estimateLaunchDepth(&testBB);
+        launchDepth = min(launchDepth, 7); // don't go too high
+
+        cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
+        if (err != S_OK)
+            printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
+        cudaMemset(gpu_perft, 0, sizeof(uint64));
+        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+
+        uint64 res;
+        err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
+        if (err != S_OK)
+            printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
+
+        printf("GPU Perft %d: %llu", 7, res);
+        // write to output file
+        removeNewLine(line);
+        fprintf(fpOp, "%s %llu\n", line, res);
+        fflush(fpOp);
+
+        QueryPerformanceCounter(&count2);
+        time.QuadPart = (count2.QuadPart - count1.QuadPart);    
+        double t = ((double) time.QuadPart) / freq.QuadPart;
+        printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / i);
+
+        i++;
+        if (i >= recordsToProcess)
+            break;
+    }
+
+
+    cudaFree(gpuBoard);
+    cudaFree(gpu_perft);
+    cudaFree(serial_perft_stack);
+
+    fclose(fpInp);
+    fclose(fpOp);
+    return 0;
+#endif
+
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
     Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
@@ -398,7 +495,7 @@ int main(int argc, char *argv[])
     int minDepth = 1;
     int maxDepth = 7;
     char fen[1024];
-    if (argc == 3)
+    if (argc >= 3)
     {
         strcpy(fen, argv[1]);
         maxDepth = atoi(argv[2]);
@@ -426,9 +523,12 @@ int main(int argc, char *argv[])
     // launchDepth is the depth at which the driver kernel launches the work kernels
     // we decide launch depth based by estimating memory requirment of the work kernel that would be launched.
     uint32 launchDepth = estimateLaunchDepth(&testBB);
-
-
     launchDepth = min(launchDepth, 11); // don't go too high
+
+    if (argc >= 4)
+    {
+        launchDepth = atoi(argv[3]);
+    }
 
     if (maxDepth < launchDepth)
         launchDepth = maxDepth;
