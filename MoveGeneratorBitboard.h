@@ -20,6 +20,11 @@ __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;
 
 
+// use constant memory for accessing lookup tables (except for magic tables as they are huge)
+// the default is to use texture cache via __ldg instruction
+// (doesn't really affect performance either way. Maybe just a tiny bit slower with fancy magics)
+#define USE_CONSTANT_MEMORY_FOR_LUT 0
+
 // use __shfl to improve memory colaesing when writing board pointers
 // improves performance by only 1% :-/
 #define USE_COLAESED_WRITES_FOR_MOVELIST_SCAN 1
@@ -55,7 +60,7 @@ __device__ uint32  preAllocatedMemoryUsed;
 
 // use lookup table (magics) for sliding moves
 // reduces performance by ~7% for GPU version
-#define USE_SLIDING_LUT 0
+#define USE_SLIDING_LUT 1
 
 // use fancy fixed-shift version - ~ 800 KB lookup tables
 // (setting this to 0 enables plain magics - with 2.3 MB lookup table)
@@ -247,6 +252,34 @@ __device__ static uint8  g_fancy_byte_magic_lookup_table[97264];
 __device__ static uint64 g_fancy_byte_BishopLookup[1428];
 __device__ static uint64 g_fancy_byte_RookLookup[4900];
 
+#if USE_CONSTANT_MEMORY_FOR_LUT == 1
+// copies of the above structures in constant memory
+//__constant__ static uint64 cBetween[64][64];      // 32 KB
+__constant__ static uint64 cLine[64][64];           // 32 KB
+
+__constant__ static uint64 cRookAttacks    [64];    // 512 bytes
+__constant__ static uint64 cBishopAttacks  [64];    // 512 bytes
+__constant__ static uint64 cKingAttacks    [64];    // 512 bytes
+__constant__ static uint64 cKnightAttacks  [64];    // 512 bytes
+
+__constant__ static uint64 cRookAttacksMasked   [64]; // 512 bytes
+__constant__ static uint64 cBishopAttacksMasked [64]; // 512 bytes
+
+__constant__ static uint64 cRookMagics          [64]; // 512 bytes
+__constant__ static uint64 cBishopMagics        [64]; // 512 bytes
+
+__constant__ static FancyMagicEntry c_bishop_magics_fancy[64]; // 1 KB
+__constant__ static FancyMagicEntry c_rook_magics_fancy[64];   // 1 KB
+
+//__constant__ static uint64 c_fancy_byte_BishopLookup[1428];    // 11.5 KB
+//__constant__ static uint64 c_fancy_byte_RookLookup[4900];      // 39.2 KB
+#endif
+
+#if USE_CONSTANT_MEMORY_FOR_LUT == 1
+#define CUDA_FAST_READ(x) (c ## x)
+#else
+#define CUDA_FAST_READ(x) (__ldg(&g ## x))
+#endif
 
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetweenLUT(uint8 sq1, uint8 sq2)
 {
@@ -260,7 +293,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInBetweenLUT(uint8 sq1, uint8 sq2)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLineLUT(uint8 sq1, uint8 sq2)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gLine[sq1][sq2]);
+    return CUDA_FAST_READ(Line[sq1][sq2]);
 #else
     return Line[sq1][sq2];
 #endif
@@ -269,7 +302,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqsInLineLUT(uint8 sq1, uint8 sq2)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gKnightAttacks[sq]);
+    return CUDA_FAST_READ(KnightAttacks[sq]);
 #else
     return KnightAttacks[sq];
 #endif
@@ -278,7 +311,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqKnightAttacks(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gKingAttacks[sq]);
+    return CUDA_FAST_READ(KingAttacks[sq]);
 #else
     return KingAttacks[sq];
 #endif
@@ -287,7 +320,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqKingAttacks(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gRookAttacks[sq]);
+    return CUDA_FAST_READ(RookAttacks[sq]);
 #else
     return RookAttacks[sq];
 #endif
@@ -296,7 +329,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacks(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gBishopAttacks[sq]);
+    return CUDA_FAST_READ(BishopAttacks[sq]);
 #else
     return BishopAttacks[sq];
 #endif
@@ -305,7 +338,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacks(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacksMasked(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gBishopAttacksMasked[sq]);
+    return CUDA_FAST_READ(BishopAttacksMasked[sq]);
 #else
     return BishopAttacksMasked[sq];
 #endif
@@ -314,7 +347,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopAttacksMasked(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacksMasked(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gRookAttacksMasked[sq]);
+    return CUDA_FAST_READ(RookAttacksMasked[sq]);
 #else
     return RookAttacksMasked[sq];
 #endif
@@ -323,7 +356,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookAttacksMasked(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookMagics(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gRookMagics[sq]);
+    return CUDA_FAST_READ(RookMagics[sq]);
 #else
     return rookMagics[sq];
 #endif
@@ -332,7 +365,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sqRookMagics(uint8 sq)
 CUDA_CALLABLE_MEMBER __forceinline uint64 sqBishopMagics(uint8 sq)
 {
 #ifdef __CUDA_ARCH__
-    return __ldg(&gBishopMagics[sq]);
+    return CUDA_FAST_READ(BishopMagics[sq]);
 #else
     return bishopMagics[sq];
 #endif
@@ -368,9 +401,16 @@ CUDA_CALLABLE_MEMBER __forceinline uint64 sq_fancy_magic_lookup_table(int index)
 CUDA_CALLABLE_MEMBER __forceinline FancyMagicEntry sq_bishop_magics_fancy(int sq)
 {
 #ifdef __CUDA_ARCH__
+#if USE_CONSTANT_MEMORY_FOR_LUT == 1
+    //return c_bishop_magics_fancy[sq];
+    FancyMagicEntry op;
+    op.data = (((uint4 *)c_bishop_magics_fancy)[sq]);
+    return op;
+#else
     FancyMagicEntry op;
     op.data = __ldg(&(((uint4 *)g_bishop_magics_fancy)[sq]));
     return op;
+#endif
 #else
     return bishop_magics_fancy[sq];
 #endif
@@ -379,9 +419,16 @@ CUDA_CALLABLE_MEMBER __forceinline FancyMagicEntry sq_bishop_magics_fancy(int sq
 CUDA_CALLABLE_MEMBER __forceinline FancyMagicEntry sq_rook_magics_fancy(int sq)
 {
 #ifdef __CUDA_ARCH__
+#if USE_CONSTANT_MEMORY_FOR_LUT == 1
+    //return c_rook_magics_fancy[sq];
+    FancyMagicEntry op;
+    op.data = (((uint4 *)c_rook_magics_fancy)[sq]);
+    return op;
+#else
     FancyMagicEntry op;
     op.data = __ldg(&(((uint4 *)g_rook_magics_fancy)[sq]));
     return op;
+#endif
 #else
     return rook_magics_fancy[sq];
 #endif
@@ -857,7 +904,6 @@ public:
     // finds the squares in between the two given squares
     // taken from 
     // http://chessprogramming.wikispaces.com/Square+Attacked+By#Legality Test-In Between-Pure Calculation
-    // Ankan : TODO: this doesn't seem to work for G8 - B3
     CUDA_CALLABLE_MEMBER __forceinline static uint64 squaresInBetween(uint8 sq1, uint8 sq2)
     {
         const uint64 m1   = C64(0xFFFFFFFFFFFFFFFF);
@@ -1091,6 +1137,55 @@ public:
 
         err = cudaMemcpyToSymbol(g_fancy_byte_RookLookup, fancy_byte_RookLookup, sizeof(fancy_byte_RookLookup));
         if (err != S_OK) printf("For copying fancy_byte_RookLookup, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+
+#if USE_CONSTANT_MEMORY_FOR_LUT == 1
+        printf("Copying tables to constant memory...\n");
+        /*
+        err = cudaMemcpyToSymbol(cBetween, Between, sizeof(Between));
+        if (err != S_OK) printf("For copying between table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));
+        */
+        err = cudaMemcpyToSymbol(cLine, Line, sizeof(Line));
+        if (err != S_OK) printf("For copying line table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cRookAttacks, RookAttacks, sizeof(RookAttacks));
+        if (err != S_OK) printf("For copying RookAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cBishopAttacks, BishopAttacks, sizeof(BishopAttacks));
+        if (err != S_OK) printf("For copying BishopAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        
+        err = cudaMemcpyToSymbol(cKnightAttacks, KnightAttacks, sizeof(KnightAttacks));
+        if (err != S_OK) printf("For copying KnightAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cKingAttacks, KingAttacks, sizeof(KingAttacks));
+        if (err != S_OK) printf("For copying KingAttacks table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cRookAttacksMasked, RookAttacksMasked, sizeof(RookAttacksMasked));
+        if (err != S_OK) printf("For copying RookAttacksMasked table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cBishopAttacksMasked, BishopAttacksMasked , sizeof(BishopAttacksMasked));
+        if (err != S_OK) printf("For copying BishopAttacksMasked  table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cRookMagics, rookMagics, sizeof(rookMagics));
+        if (err != S_OK) printf("For copying rookMagics  table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(cBishopMagics, bishopMagics, sizeof(bishopMagics));
+        if (err != S_OK) printf("For copying bishopMagics table, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(c_bishop_magics_fancy, bishop_magics_fancy, sizeof(bishop_magics_fancy));
+        if (err != S_OK) printf("For copying bishop_magics_fancy, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(c_rook_magics_fancy, rook_magics_fancy, sizeof(rook_magics_fancy));
+        if (err != S_OK) printf("For copying rook_magics_fancy, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        /*
+        err = cudaMemcpyToSymbol(c_fancy_byte_BishopLookup, fancy_byte_BishopLookup, sizeof(fancy_byte_BishopLookup));
+        if (err != S_OK) printf("For copying fancy_byte_BishopLookup, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
+        err = cudaMemcpyToSymbol(c_fancy_byte_RookLookup, fancy_byte_RookLookup, sizeof(fancy_byte_RookLookup));
+        if (err != S_OK) printf("For copying fancy_byte_RookLookup, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+        */
+#endif
     }
 
 
