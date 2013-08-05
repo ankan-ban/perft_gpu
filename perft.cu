@@ -223,10 +223,14 @@ int main(int argc, char *argv[])
     }
     else
     {
+        printf("\nUsage perft_gpu <fen> <depth> [<launchdepth>]\n");
+        printf("\nAs no paramaters were provided... running default test\n");
+        /*
         printf("\nEnter FEN String: \n");
         gets(fen);
         printf("\nEnter max depth: ");
         scanf("%d", &maxDepth);
+        */
     }
 
     if (strlen(fen) > 5)
@@ -264,6 +268,8 @@ int main(int argc, char *argv[])
     //testSingleLevelMoveGen(&testBB, 4);
     //maxDepth = 0;
 
+    // ankan - for testing
+    //launchDepth = 7;
     
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
