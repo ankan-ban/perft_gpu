@@ -514,6 +514,14 @@
 			Filter="h;hpp;hxx;hm;inl;inc;xsd"
 			UniqueIdentifier="{93995380-89BD-4b04-88EB-625FBE52EBFB}"
 			>
+			<File
+				RelativePath=".\moderngpu-master\include\kernels\intervalmove.cuh"
+				>
+			</File>
+			<File
+				RelativePath=".\moderngpu-master\include\kernels\scan.cuh"
+				>
+			</File>
 		</Filter>
 		<Filter
 			Name="Settings"
