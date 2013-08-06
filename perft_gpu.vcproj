@@ -451,7 +451,11 @@
 				>
 			</File>
 			<File
-				RelativePath=".\FancyMagics.h"
+				RelativePath=".\GlobalVars.cpp"
+				>
+			</File>
+			<File
+				RelativePath=".\Magics.cpp"
 				>
 			</File>
 			<File
@@ -499,6 +503,14 @@
 						Defines="WIN32"
 					/>
 				</FileConfiguration>
+			</File>
+			<File
+				RelativePath=".\perft_bb.h"
+				>
+			</File>
+			<File
+				RelativePath=".\switches.h"
+				>
 			</File>
 			<File
 				RelativePath=".\UciInterface.cpp"

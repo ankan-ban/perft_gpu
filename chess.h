@@ -8,6 +8,9 @@
 #include <assert.h>
 #include <windows.h>
 
+// various compile time settings
+#include "switches.h"
+
 typedef unsigned char      uint8;
 typedef unsigned short     uint16;
 typedef unsigned int       uint32;
@@ -120,14 +123,6 @@ enum eSquare
     A7, B7, C7, D7, E7, F7, G7, H7,
     A8, B8, C8, D8, E8, F8, G8, H8,
 };
-
-
-#ifdef __CUDACC__
-#define CUDA_CALLABLE_MEMBER __host__ __device__
-#else
-#define CUDA_CALLABLE_MEMBER
-#endif
-
 
 // size 128 bytes
 // let's hope this fits in register file
@@ -325,6 +320,24 @@ code	promotion	capture	special 1	special 0	kind of move
 // max no of moves possible by a single piece
 // actually it's 27 for a queen when it's in the center of the board
 #define MAX_SINGLE_PIECE_MOVES 32
+
+struct FancyMagicEntry
+{
+    union
+    {
+        struct {
+            uint64  factor;     // the magic factor
+            int     position;   // position in the main lookup table (of 97264 entries)
+
+            int     offset;     // position in the byte lookup table (only used when byte lookup is enabled)
+        };
+#ifndef SKIP_CUDA_CODE
+#ifdef __CUDA_ARCH__
+        uint4 data;
+#endif
+#endif
+    };
+};
 
 
 /** Declarations for class/methods in Util.cpp **/

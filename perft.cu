@@ -1,7 +1,4 @@
-
-//#include "chess.h"
-//#include "MoveGenerator088.h"
-#include "MoveGeneratorBitboard.h"
+#include "perft_bb.h"
 #include <math.h>
 
 #define PERFT_VERIF_MODE 0
