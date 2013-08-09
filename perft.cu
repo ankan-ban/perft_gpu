@@ -139,7 +139,7 @@ int main(int argc, char *argv[])
     uint64 *gpu_perft;
     HexaBitBoardPosition *serial_perft_stack;
     cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-    cudaMalloc(&serial_perft_stack, sizeof(HexaBitBoardPosition) * MAX_GAME_LENGTH * MAX_MOVES);
+    cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
     cudaMalloc(&gpu_perft, sizeof(uint64));
 
     LARGE_INTEGER count1, count2, time, freq;
@@ -244,6 +244,16 @@ int main(int argc, char *argv[])
 
     // launchDepth is the depth at which the driver kernel launches the work kernels
     // we decide launch depth based by estimating memory requirment of the work kernel that would be launched.
+
+    // TODO: need more accurate method to estimate launch depth
+    // branching factor near the root is not accurate. E.g, for start pos, at root branching factor = 20
+    // and we estimate launch depth = 6.. which would seem quite conservative (20^6 = 64M)
+    // at depth 10, the avg branching factor is nearly 30 and 30^6 = 729M which is > 10X initial estimate :-/
+    
+    // At launch depth 6, some launches for perft 9 start using up > 350 MB memory
+    // 384 MB is not sufficient for computing perft 10 (some of the launches consume more than that)
+    // and 1 GB is not sufficient for computing perft 11!
+    
     uint32 launchDepth = estimateLaunchDepth(&testBB);
     launchDepth = min(launchDepth, 11); // don't go too high
 
@@ -255,19 +265,42 @@ int main(int argc, char *argv[])
     if (maxDepth < launchDepth)
         launchDepth = maxDepth;
 
-    int hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, launchDepth);
-    if (hr != S_OK)
-        printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth returned %d\n", hr);
+    int syncDepth = launchDepth - 1;    // at least last 3 levels are computed by a single kernel launch
+#if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
+        // sometimes more...
+        syncDepth--;
+#endif
+    if (syncDepth < 2)
+        syncDepth = 2;
 
-    
+    // Ankan - for testing
+    printf("Calculated syncDepth was: %d\n", syncDepth);
+    syncDepth = 9;
+
+    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
+    while (hr != S_OK)
+    {
+        printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth to depth %d failed. Error: %s ... trying with lower sync depth\n", syncDepth, cudaGetErrorString(hr));
+        syncDepth--;
+        hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
+    }
+
+    // adjust the launchDepth again in case the cudaDeviceSetLimit call above failed...
+    launchDepth = syncDepth + 1;
+#if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
+    launchDepth++;
+#endif
+
     // Ankan - for testing
     //testSingleLevelPerf(&testBB, 5);
     //testSingleLevelMoveGen(&testBB, 4);
     //maxDepth = 0;
 
-    // ankan - for testing
-    //launchDepth = 7;
-    
+   
+    // for testing
+    //minDepth = 4;
+    launchDepth = 6;
+
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
         /*
@@ -281,10 +314,10 @@ int main(int argc, char *argv[])
         // try the same thing on GPU
         HexaBitBoardPosition *gpuBoard;
         uint64 *gpu_perft;
-        HexaBitBoardPosition *serial_perft_stack;
+        void *serial_perft_stack;
 
         cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-        cudaMalloc(&serial_perft_stack, sizeof(HexaBitBoardPosition) * MAX_GAME_LENGTH * MAX_MOVES);
+        cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
         cudaMalloc(&gpu_perft, sizeof(uint64));
         cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
         if (err != S_OK)
@@ -292,11 +325,13 @@ int main(int argc, char *argv[])
 
         cudaMemset(gpu_perft, 0, sizeof(uint64));
 
+        cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
+
         // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
 
         EventTimer gputime;
         gputime.start();
-        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu);
         gputime.stop();
         if (cudaGetLastError() < 0)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));

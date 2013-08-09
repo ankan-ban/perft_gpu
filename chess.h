@@ -321,6 +321,24 @@ code	promotion	capture	special 1	special 0	kind of move
 // actually it's 27 for a queen when it's in the center of the board
 #define MAX_SINGLE_PIECE_MOVES 32
 
+// random numbers for zobrist hashing
+struct ZobristRandoms
+{
+    uint64 pieces[2][6][64];     // position of every piece on board
+    uint64 castlingRights[2][2]; // king side and queen side castle for each side
+    uint64 enPassentTarget[8];   // 8 possible files for en-passent target (if any)
+    uint64 chance;               // chance (side to move)
+    uint64 depth;                // search depth (used only by perft)
+};
+
+
+// indexes used to reference the zobristRandoms.pieces[] table above
+#define ZOB_INDEX_PAWN     (PAWN - 1  )
+#define ZOB_INDEX_KNIGHT   (KNIGHT - 1)
+#define ZOB_INDEX_BISHOP   (BISHOP - 1)
+#define ZOB_INDEX_ROOK     (ROOK - 1  )
+#define ZOB_INDEX_QUEEN    (QUEEN - 1 )
+#define ZOB_INDEX_KING     (KING - 1  )
 struct FancyMagicEntry
 {
     union
@@ -339,6 +357,54 @@ struct FancyMagicEntry
     };
 };
 
+// hash table entry for Perft
+struct HashEntryPerft
+{
+    union
+    {
+        struct 
+        {
+            union
+            {
+                uint64 hashKey;
+                struct
+                {
+                    // 8 LSB's are not important as the hash table size is at least > 256 entries
+                    // store depth in the 8 LSB's
+                    uint8 depth;
+                    uint8 hashPart[7];  // most significant bits of the hash key
+                };
+            };
+            uint64 perftVal;
+        };
+#ifdef __CUDA_ARCH__
+        uint4 rawVal;
+#endif
+    };
+};
+
+CT_ASSERT(sizeof(HashEntryPerft) == 16);
+
+// Paul B's method of storing two entries per slot of hash table
+struct DualHashEntry
+{
+    HashEntryPerft deepest;
+    HashEntryPerft mostRecent;
+};
+CT_ASSERT(sizeof(DualHashEntry) == 32);
+
+struct ShallowHashEntry
+{
+    union
+    {
+        uint64 hashKey;     // most significant 40 bits used
+
+        // 24 LSB's are not important as the hash table size is at least 2 ^ 24 entries
+        // store perft (only for shallow depths) in the 24 LSB's
+        uint64 perftVal;    // least significant 24 bits used
+    };
+};
+CT_ASSERT(sizeof(ShallowHashEntry) == 8);
 
 /** Declarations for class/methods in Util.cpp **/
 

@@ -94,6 +94,7 @@ CUDA_CALLABLE_MEMBER __forceinline uint8 bitScan(uint64 x)
    _BitScanForward64(&index, x);
    return (uint8) index;    
 #else
+#if USE_HW_BITSCAN == 1
     uint32 lo = (uint32)  x;
     uint32 hi = (uint32) (x >> 32);
     DWORD id; 
@@ -107,6 +108,21 @@ CUDA_CALLABLE_MEMBER __forceinline uint8 bitScan(uint64 x)
     }
 
     return (uint8) id; 
+#else
+    const int index64[64] = {
+        0,  1, 48,  2, 57, 49, 28,  3,
+       61, 58, 50, 42, 38, 29, 17,  4,
+       62, 55, 59, 36, 53, 51, 43, 22,
+       45, 39, 33, 30, 24, 18, 12,  5,
+       63, 47, 56, 27, 60, 41, 37, 16,
+       54, 35, 52, 21, 44, 32, 23, 11,
+       46, 26, 40, 15, 34, 20, 31, 10,
+       25, 14, 19,  9, 13,  8,  7,  6
+    };
+    const uint64 debruijn64 = C64(0x03f79d71b4cb0a89);
+    assert (x != 0);
+    return index64[((x & -x) * debruijn64) >> 58];         
+#endif
 #endif
 }
 
@@ -153,10 +169,29 @@ extern uint64 fancy_byte_BishopLookup      [1428] ;  // 11 K
 uint64 findRookMagicForSquare  (int square, uint64 magicAttackTable[], uint64 magic = 0, uint64 *uniqueAttackTable = NULL, uint8 *byteIndices = NULL, int *numUniqueAttacks = 0);
 uint64 findBishopMagicForSquare(int square, uint64 magicAttackTable[], uint64 magic = 0, uint64 *uniqueAttackTable = NULL, uint8 *byteIndices = NULL, int *numUniqueAttacks = 0);
 
+// set of random numbers for zobrist hashing
+extern uint64           randoms[2000];    // set of 2000 random numbers (defined in randoms.cpp)
+extern ZobristRandoms   zob;              // the random numbers actually used
+
+extern TT_Entry *TranspositionTable;
+extern uint64   *ShallowTT;
+
+#ifndef SKIP_CUDA_CODE
+
 // gpu version of the above data structures
 // accessed for read only using __ldg() function
 
-#ifndef SKIP_CUDA_CODE
+// transposition tables and zobrist keys
+__device__ ZobristRandoms   gZob;                   // zobrist keys
+
+// shallow and deep transposition tables (used for both read and write using regular load/stores)
+__device__ TT_Entry         *gTranspositionTable;
+__device__ uint64           *gShallowTT;
+
+// cpu pointers of the above pointers (used by cudaMalloc and cudaFree)
+TT_Entry         *gTranspositionTable_cpu;
+uint64           *gShallowTT_cpu;
+
 // bit mask containing squares between two given squares
 __device__ static uint64 gBetween[64][64];
 
@@ -701,10 +736,11 @@ public:
 #if USE_BYTE_LOOKUP_FANCY == 1
         int index2 = sq_fancy_byte_magic_lookup_table(magicEntry.position + index) + magicEntry.offset;
         return sq_fancy_byte_BishopLookup(index2);
-#else
+#else // USE_BYTE_LOOKUP_FANCY == 1
         return sq_fancy_magic_lookup_table(magicEntry.position + index);
-#endif
-#else
+#endif // USE_BYTE_LOOKUP_FANCY == 1
+
+#else // #ifdef __CUDA_ARCH__
         // this version is slightly faster for CPUs.. why ?
         uint64 magic  = bishop_magics_fancy[square].factor;
         uint64 index = (magic * occ) >> (64 - BISHOP_MAGIC_BITS);
@@ -712,16 +748,16 @@ public:
         uint8 *table = &fancy_byte_magic_lookup_table[bishop_magics_fancy[square].position];
         int index2 = table[index] + bishop_magics_fancy[square].offset;
         return fancy_byte_BishopLookup[index2];
-#else
+#else // USE_BYTE_LOOKUP_FANCY == 1
         uint64 *table = &fancy_magic_lookup_table[bishop_magics_fancy[square].position];
         return table[index];
-#endif
-#endif
-#else
+#endif // USE_BYTE_LOOKUP_FANCY == 1
+#endif // #ifdef __CUDA_ARCH__
+#else // USE_FANCY_MAGICS == 1
         uint64 magic = sqBishopMagics(square);
         uint64 index = (magic * occ) >> (64 - BISHOP_MAGIC_BITS);
         return sqBishopMagicAttackTables(square, index);
-#endif
+#endif // USE_FANCY_MAGICS == 1
     }
 
     CUDA_CALLABLE_MEMBER __forceinline static uint64 rookAttacks(uint64 rook, uint64 pro)
@@ -927,6 +963,55 @@ public:
 
     static void init()
     {
+        // initialize zobrist keys
+        memcpy(&zob, randoms, sizeof(zob));
+
+        // allocate the transposition table
+#if USE_TRANSPOSITION_TABLE_FOR_CPU_PERFT == 1
+        TranspositionTable = (TT_Entry *) malloc(TT_SIZE * sizeof(TT_Entry));
+        if (TranspositionTable == NULL)
+        {
+            printf("\nFailed to allocate transposition table of %d bytes\n", TT_SIZE * sizeof(TT_Entry));
+        }
+        memset(TranspositionTable, 0, TT_SIZE * sizeof(TT_Entry));
+
+#if USE_SHALLOW_TT == 1
+        ShallowTT = (uint64*) malloc(SHALLOW_TT_SIZE * sizeof(uint64));
+        if (ShallowTT == NULL)
+        {
+            printf("\nFailed to allocate ShallowTT transposition table of %d bytes\n", SHALLOW_TT_SIZE * sizeof(uint64));
+        }
+        memset(ShallowTT, 0, SHALLOW_TT_SIZE * sizeof(uint64));
+
+#endif
+#endif 
+
+        // allocate GPU tansposition tables and initialize gpu copy of zobrist keys
+#ifndef SKIP_CUDA_CODE
+        // allocate the transposition table
+#if USE_TRANSPOSITION_TABLE == 1
+        memcpy(&zob, randoms, sizeof(zob));
+
+        cudaError_t res = cudaMalloc(&gTranspositionTable_cpu, TT_SIZE * sizeof(TT_Entry));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", TT_SIZE * sizeof(TT_Entry), cudaGetErrorString(res));
+        }
+        cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
+
+#if USE_SHALLOW_TT == 1
+        res = cudaMalloc(&gShallowTT_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate GPU Shallow transposition table of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
+        }
+        cudaMemset(gShallowTT_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
+
+#endif
+#endif 
+        
+#endif
+
         // initialize the empty board attack tables
         for (uint8 i=0; i < 64; i++)
         {
@@ -961,7 +1046,6 @@ public:
                 }
                 Line[i][j] = squaresInLine(i, j);
             }
-
 
         // initialize magic lookup tables
 #if USE_SLIDING_LUT == 1
@@ -1130,10 +1214,25 @@ public:
         if (err != S_OK) printf("For copying fancy_byte_RookLookup, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
         */
 #endif
+        // copy the zobrist hash key set
+        void *tempPtr = NULL;
+        cudaGetSymbolAddress(&tempPtr, gZob);
+
+        err = cudaMemcpy(tempPtr, &zob, sizeof(zob), cudaMemcpyHostToDevice);
+        if (err != S_OK) printf("For copying gZob, Err id: %d, str: %s\n", err, cudaGetErrorString(err));  
+
 #endif  //#ifndef SKIP_CUDA_CODE
     }
 
+    static void destroy()
+    {
+        if (TranspositionTable)
+            free(TranspositionTable);
 
+        if (ShallowTT)
+            free(ShallowTT);
+    }
+	
     CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
     {
         // check for sliding attacks to the king's square
@@ -2772,149 +2871,6 @@ public:
 
 #if USE_TEMPLATE_CHANCE_OPT == 1
     template<uint8 chance>
-    CUDA_CALLABLE_MEMBER __forceinline static void makeMove (HexaBitBoardPosition *pos, CMove move)
-#else
-    CUDA_CALLABLE_MEMBER __forceinline static void makeMove (HexaBitBoardPosition *pos, CMove move, uint8 chance)
-#endif
-    {
-        uint64 src = BIT(move.getFrom());
-        uint64 dst = BIT(move.getTo());
-
-        // figure out the source piece
-        uint64 queens = pos->bishopQueens & pos->rookQueens;
-        uint8 piece = 0;
-        if (pos->kings & src)
-            piece = KING;
-        else if (pos->knights & src)
-            piece = KNIGHT;
-        else if ((pos->pawns & RANKS2TO7) & src)
-            piece = PAWN;
-        else if (queens & src)
-            piece = QUEEN;
-        else if (pos->bishopQueens & src)
-            piece = BISHOP;
-        else
-            piece = ROOK;
-
-
-        // promote the pawn (if this was promotion move)
-        if (move.getFlags() == CM_FLAG_KNIGHT_PROMOTION || move.getFlags() == CM_FLAG_KNIGHT_PROMO_CAP)
-            piece = KNIGHT;
-        else if (move.getFlags() == CM_FLAG_BISHOP_PROMOTION || move.getFlags() == CM_FLAG_BISHOP_PROMO_CAP)
-            piece = BISHOP;
-        else if (move.getFlags() == CM_FLAG_ROOK_PROMOTION || move.getFlags() == CM_FLAG_ROOK_PROMO_CAP)
-            piece = ROOK;
-        else if (move.getFlags() == CM_FLAG_QUEEN_PROMOTION || move.getFlags() == CM_FLAG_QUEEN_PROMO_CAP)
-            piece = QUEEN;
-
-        // remove source from all bitboards
-        pos->bishopQueens &= ~src;
-        pos->rookQueens   &= ~src;
-        pos->kings        &= ~src;
-        pos->knights      &= ~src;
-        pos->pawns        &= ~(src & RANKS2TO7);
-
-        // remove the dst from all bitboards
-        pos->bishopQueens &= ~dst;
-        pos->rookQueens   &= ~dst;
-        pos->kings        &= ~dst;
-        pos->knights      &= ~dst;
-        pos->pawns        &= ~(dst & RANKS2TO7);
-
-        // put the piece that moved in the required bitboards
-        if (piece == KING)
-        {
-            pos->kings          |= dst;
-
-            if (chance == WHITE)
-                pos->whiteCastle = 0;
-            else
-                pos->blackCastle = 0;
-        }
-
-        if (piece == KNIGHT)
-            pos->knights        |= dst;
-
-        if (piece == PAWN)
-            pos->pawns          |= dst;
-
-        if (piece == BISHOP || piece == QUEEN)
-            pos->bishopQueens   |= dst;
-
-        if (piece == ROOK || piece == QUEEN)
-            pos->rookQueens     |= dst;
-
-
-        if (chance == WHITE)
-        {
-            pos->whitePieces = (pos->whitePieces ^ src) | dst;
-        }
-        else
-        {
-            pos->whitePieces  = pos->whitePieces  & ~dst;
-        }
-
-        // if it's an en-passet move, remove the captured pawn also
-        if (move.getFlags() == CM_FLAG_EP_CAPTURE)
-        {
-            uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(dst) : northOne(dst);
-
-            pos->pawns              &= ~(enPassentCapturedPiece & RANKS2TO7);
-
-            if (chance == BLACK)
-                pos->whitePieces    &= ~enPassentCapturedPiece;
-        }
-
-        // if it's a castling, move the rook also
-        if (chance == WHITE)
-        {
-            if (move.getFlags() == CM_FLAG_KING_CASTLE)
-            {
-                // white castle king side
-                pos->rookQueens  = (pos->rookQueens  ^ BIT(H1)) | BIT(F1);
-                pos->whitePieces = (pos->whitePieces ^ BIT(H1)) | BIT(F1);
-            }
-            else if (move.getFlags() == CM_FLAG_QUEEN_CASTLE)
-            {
-                // white castle queen side
-                pos->rookQueens  = (pos->rookQueens  ^ BIT(A1)) | BIT(D1);
-                pos->whitePieces = (pos->whitePieces ^ BIT(A1)) | BIT(D1);
-            }
-        }
-        else
-        {
-            if (move.getFlags() == CM_FLAG_KING_CASTLE)
-            {
-                // black castle king side
-                pos->rookQueens  = (pos->rookQueens  ^ BIT(H8)) | BIT(F8);
-            }
-            else if (move.getFlags() == CM_FLAG_QUEEN_CASTLE)
-            {
-                // black castle queen side
-                pos->rookQueens  = (pos->rookQueens  ^ BIT(A8)) | BIT(D8);
-            }
-        }
-
-
-        // update the game state
-        pos->chance = !chance;
-        pos->enPassent = 0;
-        //pos->halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
-        updateCastleFlag(pos, dst,  chance);
-
-        if (piece == ROOK)
-        {
-            updateCastleFlag(pos, src, !chance);
-        }
-
-        if (move.getFlags() == CM_FLAG_DOUBLE_PAWN_PUSH)
-        {
-            pos->enPassent = (move.getFrom() & 7) + 1;      // store file + 1
-        }
-    }
-
-#if USE_TEMPLATE_CHANCE_OPT == 1
-    template<uint8 chance>
 #endif
     CUDA_CALLABLE_MEMBER __forceinline static uint32 countMovesOutOfCheck (HexaBitBoardPosition *pos,
                                            uint64 allPawns, uint64 allPieces, uint64 myPieces,
@@ -3389,6 +3345,329 @@ public:
         }
 
         return nMoves;
+    }
+
+    #ifdef __CUDA_ARCH__
+        #define ZOB_KEY(x) (__ldg(&gZob. ## x))    
+    #else
+        #define ZOB_KEY(x) (zob. ## x)    
+    #endif
+
+#if USE_TEMPLATE_CHANCE_OPT == 1
+    template<uint8 chance, bool updateHash>
+    CUDA_CALLABLE_MEMBER __forceinline static void makeMove (HexaBitBoardPosition *pos, uint64 &hash, CMove move)
+#else
+    CUDA_CALLABLE_MEMBER __forceinline static void makeMove (HexaBitBoardPosition *pos, uint64 &hash, CMove move, uint64 &hash, uint8 chance)
+#endif
+    {
+        uint64 src = BIT(move.getFrom());
+        uint64 dst = BIT(move.getTo());
+
+        // figure out the source piece
+        uint64 queens = pos->bishopQueens & pos->rookQueens;
+        uint8 piece = 0;
+        if (pos->kings & src)
+            piece = KING;
+        else if (pos->knights & src)
+            piece = KNIGHT;
+        else if ((pos->pawns & RANKS2TO7) & src)
+            piece = PAWN;
+        else if (queens & src)
+            piece = QUEEN;
+        else if (pos->bishopQueens & src)
+            piece = BISHOP;
+        else
+            piece = ROOK;
+
+        if (updateHash)
+        {
+            // remove moving piece from source
+            hash ^= ZOB_KEY(pieces[chance][piece - 1][move.getFrom()]);
+        }
+
+        // promote the pawn (if this was promotion move)
+        if (move.getFlags() == CM_FLAG_KNIGHT_PROMOTION || move.getFlags() == CM_FLAG_KNIGHT_PROMO_CAP)
+            piece = KNIGHT;
+        else if (move.getFlags() == CM_FLAG_BISHOP_PROMOTION || move.getFlags() == CM_FLAG_BISHOP_PROMO_CAP)
+            piece = BISHOP;
+        else if (move.getFlags() == CM_FLAG_ROOK_PROMOTION || move.getFlags() == CM_FLAG_ROOK_PROMO_CAP)
+            piece = ROOK;
+        else if (move.getFlags() == CM_FLAG_QUEEN_PROMOTION || move.getFlags() == CM_FLAG_QUEEN_PROMO_CAP)
+            piece = QUEEN;
+
+        if (updateHash)
+        {
+            // remove captured piece from dst
+            {
+                uint8 dstPiece = 0;
+                // figure out destination piece
+                if (pos->kings & dst)
+                    dstPiece = KING;
+                else if (pos->knights & dst)
+                    dstPiece = KNIGHT;
+                else if ((pos->pawns & RANKS2TO7) & dst)
+                    dstPiece = PAWN;
+                else if (queens & dst)
+                    dstPiece = QUEEN;
+                else if (pos->bishopQueens & dst)
+                    dstPiece = BISHOP;
+                else if (pos->rookQueens & dst)
+                    dstPiece = ROOK;            
+
+                if (dstPiece)
+                {
+                    hash ^= ZOB_KEY(pieces[!chance][dstPiece - 1][move.getTo()]);
+                }
+            }
+
+            // add moving piece at dst
+            hash ^= ZOB_KEY(pieces[chance][piece - 1][move.getTo()]);
+
+            // flip color
+            hash ^= ZOB_KEY(chance);
+
+            // clear special move flags
+            // castling rights
+            if (pos->whiteCastle & CASTLE_FLAG_KING_SIDE)
+                hash ^= ZOB_KEY(castlingRights[WHITE][0]);
+            if (pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE)
+                hash ^= ZOB_KEY(castlingRights[WHITE][1]);
+
+            if (pos->blackCastle & CASTLE_FLAG_KING_SIDE)
+                hash ^= ZOB_KEY(castlingRights[BLACK][0]);
+            if (pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE)
+                hash ^= ZOB_KEY(castlingRights[BLACK][1]);
+
+
+            // en-passent target
+            if (pos->enPassent)
+            {
+                hash ^= ZOB_KEY(enPassentTarget[pos->enPassent - 1]);
+            }
+        }
+
+        // remove source from all bitboards
+        pos->bishopQueens &= ~src;
+        pos->rookQueens   &= ~src;
+        pos->kings        &= ~src;
+        pos->knights      &= ~src;
+        pos->pawns        &= ~(src & RANKS2TO7);
+
+        // remove the dst from all bitboards
+        pos->bishopQueens &= ~dst;
+        pos->rookQueens   &= ~dst;
+        pos->kings        &= ~dst;
+        pos->knights      &= ~dst;
+        pos->pawns        &= ~(dst & RANKS2TO7);
+
+        // put the piece that moved in the required bitboards
+        if (piece == KING)
+        {
+            pos->kings          |= dst;
+
+            if (chance == WHITE)
+                pos->whiteCastle = 0;
+            else
+                pos->blackCastle = 0;
+        }
+
+        if (piece == KNIGHT)
+            pos->knights        |= dst;
+
+        if (piece == PAWN)
+            pos->pawns          |= dst;
+
+        if (piece == BISHOP || piece == QUEEN)
+            pos->bishopQueens   |= dst;
+
+        if (piece == ROOK || piece == QUEEN)
+            pos->rookQueens     |= dst;
+
+
+        if (chance == WHITE)
+        {
+            pos->whitePieces = (pos->whitePieces ^ src) | dst;
+        }
+        else
+        {
+            pos->whitePieces  = pos->whitePieces  & ~dst;
+        }
+
+        // if it's an en-passet move, remove the captured pawn also
+        if (move.getFlags() == CM_FLAG_EP_CAPTURE)
+        {
+            uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(dst) : northOne(dst);
+
+            pos->pawns              &= ~(enPassentCapturedPiece & RANKS2TO7);
+
+            if (updateHash)
+            {
+                hash ^= ZOB_KEY(pieces[!chance][ZOB_INDEX_PAWN][bitScan(enPassentCapturedPiece)]);
+            }
+
+            if (chance == BLACK)
+                pos->whitePieces    &= ~enPassentCapturedPiece;
+        }
+
+        // if it's a castling, move the rook also
+        if (chance == WHITE)
+        {
+            if (move.getFlags() == CM_FLAG_KING_CASTLE)
+            {
+                // white castle king side
+                pos->rookQueens  = (pos->rookQueens  ^ BIT(H1)) | BIT(F1);
+                pos->whitePieces = (pos->whitePieces ^ BIT(H1)) | BIT(F1);
+                if (updateHash)
+                {
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][H1]);
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][F1]);
+                }
+            }
+            else if (move.getFlags() == CM_FLAG_QUEEN_CASTLE)
+            {
+                // white castle queen side
+                pos->rookQueens  = (pos->rookQueens  ^ BIT(A1)) | BIT(D1);
+                pos->whitePieces = (pos->whitePieces ^ BIT(A1)) | BIT(D1);
+                if (updateHash)
+                {
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][A1]);
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][D1]);
+                }
+            }
+        }
+        else
+        {
+            if (move.getFlags() == CM_FLAG_KING_CASTLE)
+            {
+                // black castle king side
+                pos->rookQueens  = (pos->rookQueens  ^ BIT(H8)) | BIT(F8);
+                if (updateHash)
+                {
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][H8]);
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][F8]);
+                }
+            }
+            else if (move.getFlags() == CM_FLAG_QUEEN_CASTLE)
+            {
+                // black castle queen side
+                pos->rookQueens  = (pos->rookQueens  ^ BIT(A8)) | BIT(D8);
+                if (updateHash)
+                {
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][A8]);
+                    hash ^= ZOB_KEY(pieces[chance][ZOB_INDEX_ROOK][D8]);
+                }
+            }
+        }
+
+
+        // update the game state
+        pos->chance = !chance;
+        pos->enPassent = 0;
+        //pos->halfMoveCounter++;   // quiet move -> increment half move counter // TODO: correctly increment this based on if there was a capture
+        updateCastleFlag(pos, dst,  chance);
+
+        if (piece == ROOK)
+        {
+            updateCastleFlag(pos, src, !chance);
+        }
+
+        if (move.getFlags() == CM_FLAG_DOUBLE_PAWN_PUSH)
+        {
+            pos->enPassent = (move.getFrom() & 7) + 1;      // store file + 1
+        }
+
+        if (updateHash)
+        {
+            // add special move flags
+            // castling rights
+            if (pos->whiteCastle & CASTLE_FLAG_KING_SIDE)
+                hash ^= ZOB_KEY(castlingRights[WHITE][0]);
+            if (pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE)
+                hash ^= ZOB_KEY(castlingRights[WHITE][1]);
+
+            if (pos->blackCastle & CASTLE_FLAG_KING_SIDE)
+                hash ^= ZOB_KEY(castlingRights[BLACK][0]);
+            if (pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE)
+                hash ^= ZOB_KEY(castlingRights[BLACK][1]);
+
+
+            // en-passent target
+            if (pos->enPassent)
+            {
+                hash ^= ZOB_KEY(enPassentTarget[pos->enPassent - 1]);
+            }
+        }
+    }
+
+    // zobrist hash helper functions
+
+    // compute zobrist hash key for a given board position
+    static CUDA_CALLABLE_MEMBER uint64 computeZobristKey(HexaBitBoardPosition *pos)
+    {
+        uint64 key = 0;
+
+        // chance (side to move)
+        if (pos->chance == WHITE)
+            key ^= ZOB_KEY(chance);
+
+        // castling rights
+        if (pos->whiteCastle & CASTLE_FLAG_KING_SIDE)
+            key ^= ZOB_KEY(castlingRights[WHITE][0]);
+        if (pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE)
+            key ^= ZOB_KEY(castlingRights[WHITE][1]);
+
+        if (pos->blackCastle & CASTLE_FLAG_KING_SIDE)
+            key ^= ZOB_KEY(castlingRights[BLACK][0]);
+        if (pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE)
+            key ^= ZOB_KEY(castlingRights[BLACK][1]);
+
+
+        // en-passent target
+        if (pos->enPassent)
+        {
+            key ^= ZOB_KEY(enPassentTarget[pos->enPassent - 1]);
+        }
+        
+
+        // piece-position
+        uint64 allPawns     = pos->pawns & RANKS2TO7;    // get rid of game state variables
+        uint64 allPieces    = pos->kings |  allPawns | pos->knights | pos->bishopQueens | pos->rookQueens;
+
+        while(allPieces)
+        {
+            uint64 piece = MoveGeneratorBitboard::getOne(allPieces);
+            int square = bitScan(piece);
+            
+            int color = !(piece & pos->whitePieces);
+            if (piece & allPawns)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_PAWN][square]);
+            }
+            else if (piece & pos->kings)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_KING][square]);
+            }
+            else if (piece & pos->knights)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_KNIGHT][square]);
+            }
+            else if (piece & pos->rookQueens & pos->bishopQueens)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_QUEEN][square]);
+            }
+            else if (piece & pos->rookQueens)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_ROOK][square]);
+            }
+            else if (piece & pos->bishopQueens)
+            {
+                key ^= ZOB_KEY(pieces[color][ZOB_INDEX_BISHOP][square]);
+            }
+
+            allPieces ^= piece;
+        }
+
+        return key;
     }
 };
 

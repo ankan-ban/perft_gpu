@@ -509,6 +509,10 @@
 				>
 			</File>
 			<File
+				RelativePath=".\randoms.cpp"
+				>
+			</File>
+			<File
 				RelativePath=".\switches.h"
 				>
 			</File>
