@@ -385,24 +385,26 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
 
     // 3. add the count to global counter
     uint64 *perftCounter = perftCounters[index];
-    atomicAdd (perftCounter, nMoves);
 
-    // TODO: implement warp wide optimization 
     // basically check if all threads in the warp are going to atomic add to the same counter, 
     // and if so perform warpReduce and do a single atomic add
 
-    /*
-    // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
-    // warp-wide reduction seems a little bit faster
-    warpReduce(nMoves);
-
-    int laneId = threadIdx.x & 0x1f;
-    
-    if (laneId == 0)
+    uint64 *firstLaneCounter = (uint64*) __shfl((int) perftCounter, 0);
+    if (__all(firstLaneCounter == perftCounter))
     {
-        atomicAdd (globalPerftCounter, nMoves);
+        warpReduce(nMoves);
+
+        int laneId = threadIdx.x & 0x1f;
+        
+        if (laneId == 0)
+        {
+            atomicAdd (perftCounter, nMoves);
+        }
     }
-    */
+    else
+    {
+        atomicAdd (perftCounter, nMoves);
+    }
 }
 
 
@@ -1791,8 +1793,6 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
 
 
 // traverse the tree recursively (and serially) and launch parallel work on reaching launchDepth
-// TODO: incremental zobrist key computation in this recursive function
-// this function should be taking negligible amount of time anyway so maybe not worth the effort.
 __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **posPtr, uint64 hash, CMove *move, 
                                                        uint64 *globalPerftCounter, int depth, CMove *movesStack, HexaBitBoardPosition *boardStack,
                                                        HexaBitBoardPosition **boardPtrStack, int launchDepth)
@@ -1813,6 +1813,7 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
     }
     else if (depth <= launchDepth)
     {
+        // TODO: it's easily possible to save one launch depth by launching this kernel with nMoves (i.e, below) instead of 1 move
         *globalPerftCounter = 0;
         
         // put the hash in scratch storage and pass it's pointer (use boardStack as scratch space)

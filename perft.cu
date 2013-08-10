@@ -275,7 +275,7 @@ int main(int argc, char *argv[])
 
     // Ankan - for testing
     printf("Calculated syncDepth was: %d\n", syncDepth);
-    syncDepth = 9;
+    //syncDepth = 9;
 
     cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     while (hr != S_OK)
@@ -299,7 +299,7 @@ int main(int argc, char *argv[])
    
     // for testing
     //minDepth = 4;
-    launchDepth = 6;
+    //launchDepth = 5;
 
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {

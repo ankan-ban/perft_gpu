@@ -32,7 +32,8 @@
 // must be a power of two
 // each entry is of 16 bytes
 // 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
-#define TT_BITS     25
+// 24 Bits: 512 MB (when dual entry is used)
+#define TT_BITS     24
 #define TT_SIZE     (1 << TT_BITS)
 
 // bits of the zobrist hash used as index into the transposition table
@@ -46,7 +47,7 @@
 
 #if USE_SHALLOW_TT == 1
 // 27 bits: 128 million entries -> 1 GB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT_BITS         26
+#define SHALLOW_TT_BITS         27  
 #define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
 #define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
 #define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
@@ -70,7 +71,7 @@
 // Keeping 384 MB as preallocated memory size allows us to use 2 GB hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to 5 - which allows 
 // parallel kernel launch depth of 7 (when 3 levels opt is enabled) or 6 (when it isn't)
-#define PREALLOCATED_MEMORY_SIZE (1 * 1024 * 1024 * 1024)
+#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -94,7 +95,7 @@
 //  ~ +4% in start position, -5% in pos2, +20% in pos3, -2.5% in pos4 and pos5
 // drastically improves performance (upto 2X) in very bad positions (with very low branching factors)
 // with hash tables, could be more helpful in regular positions also
-#define PARALLEL_LAUNCH_LAST_3_LEVELS 1
+#define PARALLEL_LAUNCH_LAST_3_LEVELS 0
 #endif
 
 // first add moves to a move list and then use makeMove function to update the board
