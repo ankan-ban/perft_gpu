@@ -325,7 +325,7 @@ int main(int argc, char *argv[])
 
         cudaMemset(gpu_perft, 0, sizeof(uint64));
 
-        cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
+        //cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
 
         // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
 

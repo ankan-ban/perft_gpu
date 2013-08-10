@@ -46,7 +46,7 @@
 
 #if USE_SHALLOW_TT == 1
 // 27 bits: 128 million entries -> 1 GB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT_BITS         20
+#define SHALLOW_TT_BITS         26
 #define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
 #define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
 #define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
@@ -82,6 +82,10 @@
 
 // use parallel scan and interval expand algorithms (from modern gpu lib) for 
 // performing the move list scan and 'expand' operation to set correct board pointers for second level child moves
+
+// Another possible idea to avoid this operation is to have GenerateMoves() generate another array containing the indices 
+// of the parent boards that generated the move (i.e, the global thread index for generateMoves kernel)
+// A scan will still be needed to figure out starting address to write, but we won't need the interval expand
 #define USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN 1
 
 #if USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN == 1
