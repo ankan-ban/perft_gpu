@@ -1469,14 +1469,6 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
 
     int numSecondLevelMoves = shMem.movesForThread[blockDim.x - 1];
 
-    if (numSecondLevelMoves == 0)
-    {
-        if (threadIdx.x == 0)
-            cudaStreamDestroy(childStream);
-        return;
-    }
-
-
     // convert inclusive scan to exclusive scan
     shMem.movesForThread[threadIdx.x] -= localMoveCounter;
 
@@ -1501,7 +1493,13 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
 
         cudaDeviceSynchronize();
         // the scan also gives the total of moveCounts
-        //numSecondLevelMoves = *pNumSecondLevelMoves;
+        numSecondLevelMoves = *pNumSecondLevelMoves;
+
+        if (numSecondLevelMoves == 0)
+        {
+            cudaStreamDestroy(childStream);
+            return;
+        }
 
         // shMem.movesForThread[] has scan of how many second level moves each thread of this thread block will generate
         // we use that as input for the intervalExpand kernel to replicate perftCounters pointers
