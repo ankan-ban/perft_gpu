@@ -187,10 +187,12 @@ __device__ ZobristRandoms   gZob;                   // zobrist keys
 // shallow and deep transposition tables (used for both read and write using regular load/stores)
 __device__ TT_Entry         *gTranspositionTable;
 __device__ uint64           *gShallowTT;
+__device__ uint64           *gShallowTT2;
 
 // cpu pointers of the above pointers (used by cudaMalloc and cudaFree)
 TT_Entry         *gTranspositionTable_cpu;
 uint64           *gShallowTT_cpu;
+uint64           *gShallowTT2_cpu;
 
 // bit mask containing squares between two given squares
 __device__ static uint64 gBetween[64][64];
@@ -1008,6 +1010,17 @@ public:
         cudaMemset(gShallowTT_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
 
 #endif
+
+#if USE_SHALLOW_TT2 == 1
+        res = cudaMalloc(&gShallowTT2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate GPU Shallow transposition table2 of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
+        }
+        cudaMemset(gShallowTT2_cpu, 0, SHALLOW_TT2_SIZE * sizeof(uint64));
+
+#endif
+
 #endif 
         
 #endif
@@ -1231,6 +1244,8 @@ public:
 
         if (ShallowTT)
             free(ShallowTT);
+
+        // Ankan: TODO: free gpu transposition tables!
     }
 	
     CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)

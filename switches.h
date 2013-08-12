@@ -42,16 +42,29 @@
 // remaining bits (that are stored per hash entry)
 #define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
 
-// use a second transposition table for storing positions only at depth 2
+// use a second transposition table for storing positions only at depth 3
 #define USE_SHALLOW_TT 1
 
 #if USE_SHALLOW_TT == 1
 // 27 bits: 128 million entries -> 1 GB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT_BITS         27  
+#define SHALLOW_TT_BITS         26
 #define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
 #define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
 #define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
 #endif
+
+// use a third(!) transposition table for storing positions only at depth 2
+#define USE_SHALLOW_TT2 1
+
+#if USE_SHALLOW_TT2 == 1
+// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
+#define SHALLOW_TT2_BITS         26 
+#define SHALLOW_TT2_SIZE         (1 << SHALLOW_TT2_BITS)
+#define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
+#define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
+#endif
+
+
 
 #if USE_DUAL_SLOT_TT == 1
 #define TT_Entry DualHashEntry

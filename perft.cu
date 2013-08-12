@@ -298,8 +298,8 @@ int main(int argc, char *argv[])
 
    
     // for testing
-    //minDepth = 4;
-    //launchDepth = 5;
+    //minDepth = 5;
+    //launchDepth = 3;
 
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
@@ -331,7 +331,7 @@ int main(int argc, char *argv[])
 
         EventTimer gputime;
         gputime.start();
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu, gShallowTT2_cpu);
         gputime.stop();
         if (cudaGetLastError() < 0)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
