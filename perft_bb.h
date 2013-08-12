@@ -269,10 +269,12 @@ union sharedMemAllocs
 
 
         HexaBitBoardPosition    *currentLevelBoards;        // [BLOCK_SIZE]
+        uint32                  *perft4Counters;            // [BLOCK_SIZE], only used by depth4 kernel
         union
         {
             uint64              *perftCounters;             // [BLOCK_SIZE], only used by the main kernel
-            uint32              *perft3Counters;            // [BLOCK_SIZE], only used by the depth3 kernel
+            uint32              *perft3Counters;            // [BLOCK_SIZE] when used by the depth3 kernel
+                                                            // and [numFirstLevelMoves] when used by depth4 kernel
         };
 
         uint64                  *currentLevelHashes;        // [BLOCK_SIZE]
@@ -286,7 +288,8 @@ union sharedMemAllocs
         uint64                 **counterPointers;           // [numFirstLevelMoves] (only used by main kernel)
         uint64                  *firstLevelHashes;          // [numFirstLevelMoves]
         int                     *firstToCurrentLevelIndices;// [numFirstLevelMoves] used instead of boardpointers in the new depth3 hash kernel
-        uint32                  *perft2Counters;            // [numFirstLevelMoves] used in the new depth3 hash kernel
+        uint32                  *perft2Counters;            // [numFirstLevelMoves] when used in the depth3 hash kernel 
+                                                            // and [numSecondLevelMoves] when used by depth4 hash kernel
 
         uint32                  numAllSecondLevelMoves;
         CMove                   *allSecondLevelChildMoves;  // [numAllSecondLevelMoves]
@@ -512,13 +515,14 @@ __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **pos
 // 3. looks up the transposition table to see if the current board is present, and if so, updates the perftCounter directly
 // 4. which perft counter to update and the hash of parent board is also found by 
 //    indexing using indices[] array into parentHashes[]/parentCounters[] arrays
-// 5. clears the perftCountersDepth2[] array passed in
+// 5. clears the perftCountersCurrentDepth[] array passed in
 
 __launch_bounds__( BLOCK_SIZE, 4 )
 __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition *parentBoards, uint64 *parentHashes, 
                                                            uint32 *parentCounters, int *indices,  CMove *moves, 
+                                                           uint64 *hashTable, uint64 hashBits, uint64 indexBits,
                                                            HexaBitBoardPosition *outPositions, uint64 *outHashes,
-                                                           uint32 *moveCounts, uint32 *perftCountersDepth2, int nThreads)
+                                                           uint32 *moveCounts, uint32 *perftCountersCurrentDepth, int nThreads)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -539,13 +543,12 @@ __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition 
 
 
         // check in transposition table
-        uint64 entry = gShallowTT2[hash & (SHALLOW_TT2_INDEX_BITS)];
-        if ((entry & SHALLOW_TT2_HASH_BITS) == (hash & SHALLOW_TT2_HASH_BITS))
+        uint64 entry = hashTable[hash & indexBits];
+        if ((entry & hashBits) == (hash & hashBits))
         {
             // hash hit
             //printf("h ");
-            
-            atomicAdd(perftCounter, entry & SHALLOW_TT2_INDEX_BITS);
+            atomicAdd(perftCounter, entry & indexBits);
             pos.whitePieces = 0;    // mark it invalid so that generatemoves doesn't generate moves
             hash = 0;               // mark it invalid so that perft3 to perft2 kernel doesn't process this
             //nMoves = countMoves(&pos, !color);
@@ -558,15 +561,17 @@ __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition 
         outPositions[index] = pos;
         outHashes[index] = hash;
         moveCounts[index] = nMoves;
-        perftCountersDepth2[index] = 0;
+        perftCountersCurrentDepth[index] = 0;
     }
 }
 
 
-// compute perft3 from perft2 (excessive use of atomic adds... )
-// also store computed perft2 entry in hash table
-__global__ void calcPerft3FromPerft2_hash(uint32 *perft3Counters, int *indices, 
-                                          uint32 *perft2Counters, uint64 *hashes, int nThreads)
+// compute perft N from perft N-1 (using excessive atomic adds)
+// also store perft (N-1) entry in the given hash table (hashes[] array is for positions at N-1 level)
+__global__ void calcPerftNFromPerftNminus1(uint32 *perftNCounters, int *indices, 
+                                           uint32 *perftNminus1Counters, uint64 *hashes,
+                                           uint64 *hashTable, uint64 hashBits, uint64 indexBits,
+                                           int nThreads)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -577,16 +582,16 @@ __global__ void calcPerft3FromPerft2_hash(uint32 *perft3Counters, int *indices,
 
         if (hash)  // hash == 0 means invalid entry - entry for which there was a hash hit
         {
-            uint32 *perft3Counter = perft3Counters + indices[index];
-            uint32 perft2 = perft2Counters[index];
+            uint32 *perftNCounter = perftNCounters + indices[index];
+            uint32 perftNminus1 = perftNminus1Counters[index];
 
             // get perft3 from perft2
             // TODO: try replacing this atomic add with some parallel reduction trick (warp wide?)
-            atomicAdd(perft3Counter, perft2);
+            atomicAdd(perftNCounter, perftNminus1);
 
             // store in hash table
-            gShallowTT2[hash & (SHALLOW_TT2_INDEX_BITS)] = (hash       & SHALLOW_TT2_HASH_BITS)  |
-                                                           (perft2     & SHALLOW_TT2_INDEX_BITS) ;
+            // it's assumed that perft value will fit in remaining (~hashMask) bits
+            hashTable[hash & indexBits] = (hash  & hashBits) | (perftNminus1) ;
         }
     }
 }
@@ -1475,10 +1480,6 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    // ankan - for testing
-    //if (blockIdx.x == 1)
-    //    return;
-
     HexaBitBoardPosition pos;
     uint64 hash;
     CMove move;
@@ -1576,7 +1577,7 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
     currentLevelBoards[threadIdx.x] = pos;
     currentLevelHashes[threadIdx.x] = hash;
 
-    // make all the board pointers point to the current board
+    // make all the first to current level indices point to the current board
     int *firstToCurrentLevelIndices = shMem.firstToCurrentLevelIndices + moveListOffset;
     for (int i=0 ; i < nMoves; i++)
     {
@@ -1611,7 +1612,8 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
 
         makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
             (currentLevelBoards, currentLevelHashes, shMem.perft3Counters, 
-            shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
+             shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
+             gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
              firstLevelChildBoards, shMem.firstLevelHashes, (uint32 *) secondLevelMoveCounts, 
              shMem.perft2Counters, numFirstLevelMoves);
 
@@ -1631,7 +1633,7 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         if (numSecondLevelMoves)
         {
             // shMem.movesForThread[] has scan of how many second level moves each thread of this thread block will generate
-            // we use that as input for the intervalExpand kernel to replicate perftCounters pointers
+            // we use that as input for the intervalExpand kernel to generate secondToFirstLevelIndices
 
             // 3. allocate memory for:
             // second level child moves
@@ -1665,8 +1667,9 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
 
             // 7. launch a kernel to compute perft3 values from perft2 values.. and to update perft2 values in hash
             nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
-            calcPerft3FromPerft2_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
-                (shMem.perft3Counters, firstToCurrentLevelIndices, shMem.perft2Counters, shMem.firstLevelHashes, numFirstLevelMoves);
+            calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                (shMem.perft3Counters, firstToCurrentLevelIndices, shMem.perft2Counters, shMem.firstLevelHashes, 
+                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numFirstLevelMoves);
 
             cudaDeviceSynchronize();
         }
@@ -1686,6 +1689,333 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
     }
 }
 
+// same as above kernel but launches the main kernel to process 3 levels/plys in single launch
+// positions is array of pointers containing the old position on which moves[] is to be made
+// hashes[] array contains hash (duplicated) of positions array[] before making the move
+// perftCounts[] is array of pointers to perft counters
+__global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint64 *hashes, CMove *moves, uint64 **perftCounters, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    HexaBitBoardPosition pos;
+    CMove move;
+    uint8 color;
+    uint64 hash, lookupHash;
+    TT_Entry entry;
+
+    // shared memory structure containing moves generated by each thread in the thread block
+    __shared__ sharedMemAllocs shMem;
+
+    // 1. first just count the moves (and store it in shared memory for each thread in block)
+    int nMoves = 0;
+
+    if (index < nThreads)
+    {
+        pos = *(positions[index]);
+        move = moves[index];
+        color = pos.chance;
+        hash = makeMoveAndUpdateHash(&pos, hashes[index], move, color);
+
+        color = !color;
+
+        // look up the transposition table
+        uint64 perftVal;
+        lookupHash = hash ^ (ZOB_KEY(depth) * 4);
+        entry = lookupTT(lookupHash);
+        if (searchTTEntry(entry, lookupHash, &perftVal))
+        {
+            // hash hit: no need to process this position further
+            // TODO: might want to do a warp wide reduction before atomic add
+            atomicAdd(perftCounters[index], perftVal);
+        }
+        else
+        {
+            nMoves = countMoves(&pos, color);
+        }
+    }
+
+    shMem.movesForThread[threadIdx.x] = nMoves;
+    __syncthreads();
+
+    // 2. perform scan (prefix sum) to figure out starting addresses of child boards
+    scan(shMem.movesForThread);
+    
+    // convert inclusive scan to exclusive scan
+    uint32 moveListOffset = shMem.movesForThread[threadIdx.x] - nMoves;
+
+    // number of first level moves
+    uint32 numFirstLevelMoves = shMem.movesForThread[blockDim.x - 1];
+
+    // nothing more to do!
+    if (numFirstLevelMoves == 0)
+        return;
+
+    // some terminology to avoid confusion:
+    //  - we are at depth = 4, so currentLevelBoards, currentLevelHashes, etc are for positions of depth 4
+    //  - firstLevel is depth = 3, so for e.g, numFirstLevelMoves is sum of num of moves 
+    //                                         generated by all child boards of current boards
+    //  - secondLevel is depth = 2
+    //  - thirdLevel is depth = 1 (i.e, the leaves where we just count the moves by calling the final kernel)
+
+    // first thread of block allocates memory to store all moves generated by the thread block
+    if (threadIdx.x == 0)
+    {
+        // TODO: maybe combine these multiple memory requests to a single request (to save on no. of AtmoicAdds() used)
+        // allocate memory for:
+
+        // first level child moves
+        deviceMalloc(&shMem.allFirstLevelChildMoves, sizeof(CMove) * numFirstLevelMoves);
+
+        // current level board positions
+        deviceMalloc(&shMem.currentLevelBoards, sizeof(HexaBitBoardPosition) * BLOCK_SIZE);
+
+        // current level hashes
+        deviceMalloc(&shMem.currentLevelHashes, sizeof(uint64) * BLOCK_SIZE);
+
+        // perft counters for depth 4 (equal to no. of threads in this thread block)
+        deviceMalloc(&shMem.perft4Counters, sizeof(uint32) * BLOCK_SIZE);
+
+        // and also for indices for first level childs to to current level board positions
+        deviceMalloc(&shMem.firstToCurrentLevelIndices, sizeof(int) * numFirstLevelMoves);
+
+        // perft counters for depth 3 (for the first level childs)
+        deviceMalloc(&shMem.perft3Counters, sizeof(uint32) * numFirstLevelMoves);
+
+        // also need to allocate first level child boards
+        deviceMalloc(&shMem.allFirstLevelChildBoards, sizeof(HexaBitBoardPosition) * numFirstLevelMoves);
+
+        // and hashes for them
+        deviceMalloc(&shMem.firstLevelHashes, sizeof(uint64) * numFirstLevelMoves);
+
+        // allocate memory to hold counts of moves that will be generated by first level boards
+        // first level move counts is in per-thread variable "nMoves"
+        int size = sizeof(uint32) * numFirstLevelMoves;
+        size = (int) size * 1.2f + 256;
+        // (add some scratch space needed by scan and intervalExpand functions)
+        deviceMalloc(&shMem.allSecondLevelMoveCounts, size);
+    }
+
+    __syncthreads();
+
+    // other threads get value from shared memory
+    // address of starting of move list for the current thread
+    CMove *firstLevelChildMoves = shMem.allFirstLevelChildMoves + moveListOffset;
+
+    // update the current level board with the board after makeMove
+    HexaBitBoardPosition *currentLevelBoards = shMem.currentLevelBoards;
+    uint64               *currentLevelHashes = shMem.currentLevelHashes;
+    currentLevelBoards[threadIdx.x] = pos;
+    currentLevelHashes[threadIdx.x] = hash;
+
+    // make all the first to current level indices point to the current board
+    int *firstToCurrentLevelIndices = shMem.firstToCurrentLevelIndices + moveListOffset;
+    for (int i=0 ; i < nMoves; i++)
+    {
+        firstToCurrentLevelIndices[i] = threadIdx.x;
+    }
+
+    // 3. generate the moves now
+    if (nMoves)
+    {
+        generateMoves(&pos, color, firstLevelChildMoves);
+    }
+
+    // clear the perft counters for the current level
+    shMem.perft4Counters[threadIdx.x] = 0;
+
+    __syncthreads();
+
+    if (threadIdx.x == 0)
+    {
+        //printf("\nIn the depth 4 hash kernel!\n");
+
+        HexaBitBoardPosition *firstLevelChildBoards;
+        int *secondLevelMoveCounts = (int *) shMem.allSecondLevelMoveCounts;
+        cudaStream_t childStream;
+        uint32 nBlocks;
+
+        firstLevelChildBoards = shMem.allFirstLevelChildBoards;
+        cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+
+        // 1. count the moves that would be generated by childs
+        //    (and also generate first level child boards, from child boards)
+        nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
+
+        makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+            (currentLevelBoards, currentLevelHashes, shMem.perft4Counters, 
+             shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
+             gShallowTT, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, 
+             firstLevelChildBoards, shMem.firstLevelHashes, (uint32 *) secondLevelMoveCounts, 
+             shMem.perft3Counters, numFirstLevelMoves);
+
+        //cudaDeviceSynchronize();
+        //printf("\nAfter calling makemove_and_count_moves_single_level_hash!\n");
+
+        // 2. secondLevelMoveCounts now has individual move counts, run a scan on it
+        int *pNumSecondLevelMoves = secondLevelMoveCounts + numFirstLevelMoves;
+        int *scratchSpace = pNumSecondLevelMoves + 1;
+        mgpu::ScanD<mgpu::MgpuScanTypeExc>
+            (secondLevelMoveCounts, numFirstLevelMoves, secondLevelMoveCounts, mgpu::ScanOp<mgpu::ScanOpTypeAdd, int>(), 
+	         pNumSecondLevelMoves, false, childStream, scratchSpace);
+
+        cudaDeviceSynchronize();
+        // the scan also gives the total of moveCounts
+        int numSecondLevelMoves = *pNumSecondLevelMoves;
+
+        if (numSecondLevelMoves)
+        {
+            // 3. allocate memory for:
+            // second level child moves
+            CMove *secondLevelChildMoves;
+            deviceMalloc(&secondLevelChildMoves, sizeof(CMove) * numSecondLevelMoves);
+
+            // and board indices to first level boards
+            int *secondToFirstLevelIndices;
+            deviceMalloc(&secondToFirstLevelIndices, sizeof(int) * numSecondLevelMoves);
+
+            // Generate secondToFirstLevelIndices by running interval expand
+            // 
+            // Expand numFirstLevelMoves items -> secondLevelMoveCounts items
+            // The function takes a integer base number, takes an integer multiplier and performs integer addition to populate the output
+
+            // secondLevelMoveCounts now have the exclusive scan - containing the indices to put moves on
+
+            mgpu::IntervalExpandDGenValues(numSecondLevelMoves, secondLevelMoveCounts, (int) 0,
+                                           1, numFirstLevelMoves, secondToFirstLevelIndices, 
+                                           childStream, scratchSpace);
+
+            // 5. generate the second level child moves
+            // secondLevelMoveCounts is used by the below kernel to index into secondLevelChildMoves[] - to know where to put the generated moves
+            generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(firstLevelChildBoards, secondLevelChildMoves, secondLevelMoveCounts, numFirstLevelMoves);
+
+
+            //cudaDeviceSynchronize();
+            //printf("\nAfter calling generate_moves_single_level to generate second level moves!\n");
+
+
+            // 6. now we have all second level generated moves in secondLevelChildMoves. We now want to
+            //  count the number of moves that would be generated by second level childs
+            //  (and also generate second level child boards, from first level child board pointers and second level secondLevelChildMoves)
+
+            // firstly allocate space to hold them
+            HexaBitBoardPosition *secondLevelChildBoards;
+            uint64 *secondLevelHashes;
+            int *thirdLevelMoveCounts;
+
+            deviceMalloc(&secondLevelChildBoards, sizeof(HexaBitBoardPosition) * numSecondLevelMoves);
+            deviceMalloc(&secondLevelHashes, sizeof(uint64) * numSecondLevelMoves);
+            // perft counters for depth 2 (second level boards)
+            deviceMalloc(&shMem.perft2Counters, sizeof(uint32) * numSecondLevelMoves);
+
+            int sizeAlloc = (int) sizeof(uint32) * numSecondLevelMoves * 1.2f + 256;
+            deviceMalloc(&thirdLevelMoveCounts, sizeAlloc);
+            nBlocks = (numSecondLevelMoves - 1) / BLOCK_SIZE + 1;
+
+            
+            makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                (firstLevelChildBoards, shMem.firstLevelHashes, shMem.perft3Counters, 
+                 secondToFirstLevelIndices, secondLevelChildMoves, 
+                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
+                 secondLevelChildBoards, secondLevelHashes, (uint32 *) thirdLevelMoveCounts, 
+                 shMem.perft2Counters, numSecondLevelMoves);
+
+            //cudaDeviceSynchronize();
+            //printf("\nAfter calling makemove_and_count_moves_single_level_hash to generate second level boards, and do many things!\n");
+
+
+            // 7. thirdLevelMoveCounts now has individual move counts, run a scan on it
+            int *pNumThirdLevelMoves = thirdLevelMoveCounts + numSecondLevelMoves;
+            int *scratchSpace2 = pNumThirdLevelMoves + 1;
+            mgpu::ScanD<mgpu::MgpuScanTypeExc>
+                (thirdLevelMoveCounts, numSecondLevelMoves, thirdLevelMoveCounts, mgpu::ScanOp<mgpu::ScanOpTypeAdd, int>(), 
+	             pNumThirdLevelMoves, false, childStream, scratchSpace2);
+
+            cudaDeviceSynchronize();
+            // the scan also gives the total of moveCounts
+            int numThirdLevelMoves = *pNumThirdLevelMoves;
+
+            //cudaDeviceSynchronize();
+            //printf("\nAfter Running scan the second time to figure out numThirdLevelMoves: %d\n", numThirdLevelMoves);
+
+
+            // 8. allocate memory for:
+            // third level child moves
+            CMove *thirdLevelChildMoves;
+            deviceMalloc(&thirdLevelChildMoves, sizeof(CMove) * numThirdLevelMoves);
+            // and indices from third to second level boards
+            int *thirdToSecondLevelIndices;
+            deviceMalloc(&thirdToSecondLevelIndices, sizeof(int) * numThirdLevelMoves);
+            
+            // 9. now run interval expand to get thirdToSecondLevelIndices filled
+            mgpu::IntervalExpandDGenValues(numThirdLevelMoves, thirdLevelMoveCounts, (int) 0,
+                                           1, numSecondLevelMoves, thirdToSecondLevelIndices, 
+                                           childStream, scratchSpace2);
+
+
+            //cudaDeviceSynchronize();
+            //printf("\nAfter Running IntervalExpandDGenValues the second time\n");
+
+
+            // 10. Generate the third level child moves
+            // thirdLevelMoveCounts (containing the scan) is used by the below kernel 
+            // to index into thirdLevelChildMoves[] - to know where to put the generated moves
+            generate_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                (secondLevelChildBoards, thirdLevelChildMoves, thirdLevelMoveCounts, numSecondLevelMoves);
+            
+            //cudaDeviceSynchronize();
+            //printf("\njust before running the final kernel...\n");
+
+            // 11. finally run countMoves on third level moves!
+            // this will populate perft2Counters
+            nBlocks = (numThirdLevelMoves - 1) / BLOCK_SIZE + 1;
+            makeMove_and_perft_single_level_indices<<<nBlocks, BLOCK_SIZE, 0, childStream>>> 
+                (secondLevelChildBoards, shMem.perft2Counters, thirdToSecondLevelIndices, thirdLevelChildMoves, numThirdLevelMoves);
+
+            //cudaDeviceSynchronize();
+            //printf("\nfinished the big kernel...updating hash and counters now\n");
+
+
+            // 12. launch a kernel to compute perft3 values from perft2 values.. 
+            //     and to update perft2 values in hash
+            nBlocks = (numSecondLevelMoves - 1) / BLOCK_SIZE + 1;
+            calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                (shMem.perft3Counters, secondToFirstLevelIndices, shMem.perft2Counters, secondLevelHashes, 
+                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numSecondLevelMoves);
+
+
+            //cudaDeviceSynchronize();
+            //printf("\nperft2 to perft3 done.. running perft3 to perft4\n");
+
+
+            // 13. launch a kernel to compute perft4 values from perft3 values
+            nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
+            calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                (shMem.perft4Counters, firstToCurrentLevelIndices, shMem.perft3Counters, shMem.firstLevelHashes,
+                 gShallowTT, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, numFirstLevelMoves);
+
+
+            //cudaDeviceSynchronize();
+            //printf("\nEverything done... whats the problem then?\n");
+
+            cudaDeviceSynchronize();
+        }
+
+        cudaStreamDestroy(childStream);
+    }
+
+    __syncthreads();
+    if (nMoves)
+    {
+        uint64 perftVal = shMem.perft4Counters[threadIdx.x];
+
+        // add it to perftCounter for this thread... and store it in TT
+        atomicAdd(perftCounters[index], perftVal);
+
+        // store perft val in transposition table
+        storeTTEntry(entry, lookupHash, 4, perftVal);
+    }
+}
 
 
 
@@ -1834,12 +2164,11 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
         {
             perft_bb_gpu_single_level<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (boardPointers, firstLevelChildMoves, perftCounter, numFirstLevelMoves);
         }
-/*
+
 #if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
         else if (depth == 5)
-            perft_bb_gpu_depth4<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (boardPointers, firstLevelChildMoves, perftCounter, numFirstLevelMoves);
+            perft_bb_gpu_depth4_hash<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (boardPointers, nextHashes, firstLevelChildMoves, counterPointers, numFirstLevelMoves);
 #endif
-*/
         else if (depth == 4)
             perft_bb_gpu_depth3_hash<<<nBlocks, BLOCK_SIZE, sizeof(sharedMemAllocs), childStream>>> (boardPointers, nextHashes, firstLevelChildMoves, counterPointers, numFirstLevelMoves);
         else

@@ -108,7 +108,7 @@
 //  ~ +4% in start position, -5% in pos2, +20% in pos3, -2.5% in pos4 and pos5
 // drastically improves performance (upto 2X) in very bad positions (with very low branching factors)
 // with hash tables, could be more helpful in regular positions also
-#define PARALLEL_LAUNCH_LAST_3_LEVELS 0
+#define PARALLEL_LAUNCH_LAST_3_LEVELS 1
 #endif
 
 // first add moves to a move list and then use makeMove function to update the board
