@@ -134,7 +134,7 @@ int main(int argc, char *argv[])
     recordsToProcess = atoi(argv[4]);
     printf("\nStart Record: %d, records to process: %d\n", startRecord, recordsToProcess);
 
-    cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 7);
+    cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
     HexaBitBoardPosition *gpuBoard;
     uint64 *gpu_perft;
     HexaBitBoardPosition *serial_perft_stack;
@@ -166,7 +166,8 @@ int main(int argc, char *argv[])
         if (err != S_OK)
             printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
         cudaMemset(gpu_perft, 0, sizeof(uint64));
-        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+        //perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu, gShallowTT2_cpu);
 
         uint64 res;
         err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
@@ -331,7 +332,11 @@ int main(int argc, char *argv[])
 
         EventTimer gputime;
         gputime.start();
+#if USE_TRANSPOSITION_TABLE == 1
         perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu, gShallowTT2_cpu);
+#else
+        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+#endif
         gputime.stop();
         if (cudaGetLastError() < 0)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));

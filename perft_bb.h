@@ -1470,7 +1470,7 @@ __device__ __forceinline__ void storeTTEntry(TT_Entry &entry, uint64 hash, int d
 //--------------------------------------------------------------------------------------------------
 // versions of the above kernel that use hash tables
 //--------------------------------------------------------------------------------------------------
-
+#if USE_TRANSPOSITION_TABLE == 1
 
 // positions is array of pointers containing the old position on which moves[] is to be made
 // hashes[] array contains hash (duplicated) of positions array[] before making the move
@@ -2299,3 +2299,5 @@ __global__ void perft_bb_driver_gpu_hash(HexaBitBoardPosition *pos, uint64 *glob
     uint64 finalPerfVal = perft_bb_gpu_hash_recursive_launcher(boardPtrStack, hash, NULL, globalPerftCounter, depth, movesStack, boardStack, boardPtrStack+1, launchDepth);
     *globalPerftCounter = finalPerfVal;
 }
+
+#endif

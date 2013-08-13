@@ -6,84 +6,16 @@
     bool printMoves = false;
 #endif
 
-// make use of a hash table to avoid duplicate calculations due to transpositions
-#define USE_TRANSPOSITION_TABLE 1
-
-// avoid creating huge tables in CPU memory when we aren't using them!
-#define USE_TRANSPOSITION_TABLE_FOR_CPU_PERFT 0
-
-#if USE_TRANSPOSITION_TABLE == 1
-
-// incrementally calculate zobrist hash when making a move / generating a board
-// currently only works with move list (when USE_MOVE_LIST == 1)
-// costs ~7% for CPU perft (on CPU)
-#define INCREMENTAL_ZOBRIST_UPDATE 0
-
-// check if the incremental update of zobrist hash is working as expected
-#define DEBUG_INCREMENTAL_ZOBRIST_UPDATE 0
-
-// store two positions (most recent and deepest) in every entry of hash table
-#define USE_DUAL_SLOT_TT 1
-
-// make use of transposition table even at the leaves
-#define USE_TRANSPOSITION_AT_LEAVES 0
-
-// size of transposition table (in number of entries)
-// must be a power of two
-// each entry is of 16 bytes
-// 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
-// 24 Bits: 512 MB (when dual entry is used)
-#define TT_BITS     24
-#define TT_SIZE     (1 << TT_BITS)
-
-// bits of the zobrist hash used as index into the transposition table
-#define TT_INDEX_BITS  (TT_SIZE - 1)
-
-// remaining bits (that are stored per hash entry)
-#define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
-
-// use a second transposition table for storing positions only at depth 3
-#define USE_SHALLOW_TT 1
-
-#if USE_SHALLOW_TT == 1
-// 27 bits: 128 million entries -> 1 GB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT_BITS         26
-#define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
-#define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
-#define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
-#endif
-
-// use a third(!) transposition table for storing positions only at depth 2
-#define USE_SHALLOW_TT2 1
-
-#if USE_SHALLOW_TT2 == 1
-// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT2_BITS         26 
-#define SHALLOW_TT2_SIZE         (1 << SHALLOW_TT2_BITS)
-#define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
-#define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
-#endif
-
-
-
-#if USE_DUAL_SLOT_TT == 1
-#define TT_Entry DualHashEntry
-#else
-#define TT_Entry HashEntryPerft
-#endif
-
-#endif
-
 // don't call cudaMalloc/cudaFree from device code, 
 // suballocate from a pre-allocated buffer instead
+// (most of the routines now won't work when this is OFF - i.e, we now rely on this)
 #define USE_PREALLOCATED_MEMORY 1
 
-// 384 MB ... to keep space for transposition tables
+// 768 MB ... to keep space for transposition tables
 // just hope that this would be sufficient :'(
 
-// Keeping 384 MB as preallocated memory size allows us to use 2 GB hash table 
-// and allows setting cudaLimitDevRuntimeSyncDepth to 5 - which allows 
-// parallel kernel launch depth of 7 (when 3 levels opt is enabled) or 6 (when it isn't)
+// Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
+// and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
 #define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
@@ -111,22 +43,63 @@
 #define PARALLEL_LAUNCH_LAST_3_LEVELS 1
 #endif
 
-// first add moves to a move list and then use makeMove function to update the board
-// when this is set to 0, generateBoards is called to generate the updated boards directly
-// Note that this flag is only for CPU perft. For gpu, we always make use of moveList
-#define USE_MOVE_LIST_FOR_CPU_PERFT 0
 
-// only count moves at leaves (instead of generating/making them)
-#define USE_COUNT_ONLY_OPT 1
+// make use of a hash table to avoid duplicate calculations due to transpositions
+// it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
+#define USE_TRANSPOSITION_TABLE 1
+
+#if USE_TRANSPOSITION_TABLE == 1
+
+// store two positions (most recent and deepest) in every entry of hash table
+// default is to store deepest only
+#define USE_DUAL_SLOT_TT 1
+
+// size of transposition table (in number of entries)
+// must be a power of two
+// each entry is of 16 bytes
+// 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
+// 24 Bits: 512 MB (when dual entry is used)
+#define TT_BITS     24
+#define TT_SIZE     (1 << TT_BITS)
+
+// bits of the zobrist hash used as index into the transposition table
+#define TT_INDEX_BITS  (TT_SIZE - 1)
+
+// remaining bits (that are stored per hash entry)
+#define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
+
+// A transposition table for storing only depth 3 positions
+// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
+#define SHALLOW_TT_BITS         26
+#define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
+#define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
+#define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
+
+// A third(!) transposition table for storing positions only at depth 2
+// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
+#define SHALLOW_TT2_BITS         26 
+#define SHALLOW_TT2_SIZE         (1 << SHALLOW_TT2_BITS)
+#define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
+#define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
+
+// for the two shallow transposition tables above, the perft value is stored in index bits
+// as perft 2 and perft 3 should always fit even in a 16 bit number
+
+
+#if USE_DUAL_SLOT_TT == 1
+#define TT_Entry DualHashEntry
+#else
+#define TT_Entry HashEntryPerft
+#endif
+
+#endif
+
 
 // move generation functions templated on chance
 #define USE_TEMPLATE_CHANCE_OPT 1
 
 // bitwise magic instead of if/else for castle flag updation
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
-
-// Move counting (countOnly) doesn't work with old method
-#define EN_PASSENT_GENERATION_NEW_METHOD 1
 
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 1

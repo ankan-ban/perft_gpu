@@ -33,9 +33,10 @@ uint64 bishopMagicAttackTables    [64][1 << BISHOP_MAGIC_BITS];    // 256 KB
 ZobristRandoms zob;
 
 // the transposition tables
+#if USE_TRANSPOSITION_TABLE == 1
 TT_Entry *TranspositionTable = NULL;
 uint64   *ShallowTT = NULL;
-
+#endif
 
 // Fixed shift fancy magics
 // taken from http://www.open-aurec.com/wbforum/viewtopic.php?f=4&t=51162

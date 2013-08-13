@@ -173,8 +173,10 @@ uint64 findBishopMagicForSquare(int square, uint64 magicAttackTable[], uint64 ma
 extern uint64           randoms[2000];    // set of 2000 random numbers (defined in randoms.cpp)
 extern ZobristRandoms   zob;              // the random numbers actually used
 
+#if USE_TRANSPOSITION_TABLE == 1
 extern TT_Entry *TranspositionTable;
 extern uint64   *ShallowTT;
+#endif
 
 #ifndef SKIP_CUDA_CODE
 
@@ -185,6 +187,8 @@ extern uint64   *ShallowTT;
 __device__ ZobristRandoms   gZob;                   // zobrist keys
 
 // shallow and deep transposition tables (used for both read and write using regular load/stores)
+#if USE_TRANSPOSITION_TABLE == 1
+
 __device__ TT_Entry         *gTranspositionTable;
 __device__ uint64           *gShallowTT;
 __device__ uint64           *gShallowTT2;
@@ -193,6 +197,8 @@ __device__ uint64           *gShallowTT2;
 TT_Entry         *gTranspositionTable_cpu;
 uint64           *gShallowTT_cpu;
 uint64           *gShallowTT2_cpu;
+
+#endif
 
 // bit mask containing squares between two given squares
 __device__ static uint64 gBetween[64][64];
@@ -968,26 +974,6 @@ public:
         // initialize zobrist keys
         memcpy(&zob, randoms, sizeof(zob));
 
-        // allocate the transposition table
-#if USE_TRANSPOSITION_TABLE_FOR_CPU_PERFT == 1
-        TranspositionTable = (TT_Entry *) malloc(TT_SIZE * sizeof(TT_Entry));
-        if (TranspositionTable == NULL)
-        {
-            printf("\nFailed to allocate transposition table of %d bytes\n", TT_SIZE * sizeof(TT_Entry));
-        }
-        memset(TranspositionTable, 0, TT_SIZE * sizeof(TT_Entry));
-
-#if USE_SHALLOW_TT == 1
-        ShallowTT = (uint64*) malloc(SHALLOW_TT_SIZE * sizeof(uint64));
-        if (ShallowTT == NULL)
-        {
-            printf("\nFailed to allocate ShallowTT transposition table of %d bytes\n", SHALLOW_TT_SIZE * sizeof(uint64));
-        }
-        memset(ShallowTT, 0, SHALLOW_TT_SIZE * sizeof(uint64));
-
-#endif
-#endif 
-
         // allocate GPU tansposition tables and initialize gpu copy of zobrist keys
 #ifndef SKIP_CUDA_CODE
         // allocate the transposition table
@@ -1001,7 +987,7 @@ public:
         }
         cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
 
-#if USE_SHALLOW_TT == 1
+        // first shallow TT (for storing depth 3 positions)
         res = cudaMalloc(&gShallowTT_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
         if (res != S_OK)
         {
@@ -1009,9 +995,7 @@ public:
         }
         cudaMemset(gShallowTT_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
 
-#endif
-
-#if USE_SHALLOW_TT2 == 1
+        // second transposition table (for storing depth 2 positions)
         res = cudaMalloc(&gShallowTT2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
         if (res != S_OK)
         {
@@ -1019,10 +1003,8 @@ public:
         }
         cudaMemset(gShallowTT2_cpu, 0, SHALLOW_TT2_SIZE * sizeof(uint64));
 
-#endif
-
 #endif 
-        
+       
 #endif
 
         // initialize the empty board attack tables
@@ -1239,6 +1221,7 @@ public:
 
     static void destroy()
     {
+#if USE_TRANSPOSITION_TABLE == 1
         if (TranspositionTable)
             free(TranspositionTable);
 
@@ -1246,6 +1229,8 @@ public:
             free(ShallowTT);
 
         // Ankan: TODO: free gpu transposition tables!
+#endif
+
     }
 	
     CUDA_CALLABLE_MEMBER static __forceinline uint64 findPinnedPieces (uint64 myKing, uint64 myPieces, uint64 enemyBishops, uint64 enemyRooks, uint64 allPieces, uint8 kingIndex)
@@ -2025,7 +2010,7 @@ public:
                 enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
             }
         }
-#if EN_PASSENT_GENERATION_NEW_METHOD == 1
+
         if (enPassentTarget)
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
@@ -2062,7 +2047,7 @@ public:
                 epSources ^= pawn;
             }
         }
-#endif
+
         // 1. pawn moves
 
         // checking rank for pawn double pushes
@@ -2104,19 +2089,6 @@ public:
                 addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
             }
 
-            // en-passent capture isn't possible by a pinned pawn
-            // TODO: think more about it
-            // it's actually possible, if the pawn moves in the 'direction' of the pin
-            // check out the position: rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6
-            // at depth 2
-#if EN_PASSENT_GENERATION_NEW_METHOD != 1
-            if (dst & enPassentTarget)
-            {
-                addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
-            }
-#endif
-            
-
             pinnedPawns ^= pawn;  // same as &= ~pawn (but only when we know that the first set contain the element we want to clear)
         }
 
@@ -2147,26 +2119,6 @@ public:
             uint64 eastCapture = (chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn);
             dst = eastCapture & enemyPieces;
             if (dst) addPawnMoves(&nMoves, &newPositions, pos, pawn, dst, chance);
-
-            // en-passent 
-            // there can be only a single en-passent capture per pawn
-#if EN_PASSENT_GENERATION_NEW_METHOD != 1
-            dst = (westCapture | eastCapture) & enPassentTarget;
-            if (dst) 
-            {
-                // if the enPassent captured piece, the pawn and the king all lie in the same line, 
-                // we need to check if the enpassent would move the king into check!!
-                // really painful condition!!@!
-                uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
-                uint64 propogator = (~allPieces) | enPassentCapturedPiece | pawn;
-                uint64 causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
-                                     (pos->kings & myPieces);
-                if (!causesCheck)
-                {
-                    addEnPassentMove(&nMoves, &newPositions, pos, pawn, dst, chance);
-                }
-            }
-#endif
 
             myPawns ^= pawn;
         }
@@ -2587,7 +2539,7 @@ public:
                 enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
             }
         }
-#if EN_PASSENT_GENERATION_NEW_METHOD == 1
+
         if (enPassentTarget)
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
@@ -2624,7 +2576,7 @@ public:
                 epSources ^= pawn;
             }
         }
-#endif
+
         // 1. pawn moves
 
         // checking rank for pawn double pushes
@@ -2666,18 +2618,6 @@ public:
                 addCompactPawnMoves(&nMoves, &genMoves, pawnIndex, dst, CM_FLAG_CAPTURE);
             }
 
-            // en-passent capture isn't possible by a pinned pawn
-            // TODO: think more about it
-            // it's actually possible, if the pawn moves in the 'direction' of the pin
-            // check out the position: rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6
-            // at depth 2
-#if EN_PASSENT_GENERATION_NEW_METHOD != 1
-            if (dst & enPassentTarget)
-            {
-                addCompactMove(&nMoves, &genMoves, pawnIndex, bitScan(dst), CM_FLAG_EP_CAPTURE);
-            }
-#endif
-
             pinnedPawns ^= pawn;  // same as &= ~pawn (but only when we know that the first set contain the element we want to clear)
         }
 
@@ -2708,26 +2648,6 @@ public:
             uint64 eastCapture = (chance == WHITE) ? northEastOne(pawn) : southEastOne(pawn);
             dst = eastCapture & enemyPieces;
             if (dst) addCompactPawnMoves(&nMoves, &genMoves, bitScan(pawn), dst, CM_FLAG_CAPTURE);
-
-            // en-passent 
-            // there can be only a single en-passent capture per pawn
-#if EN_PASSENT_GENERATION_NEW_METHOD != 1
-            dst = (westCapture | eastCapture) & enPassentTarget;
-            if (dst) 
-            {
-                // if the enPassent captured piece, the pawn and the king all lie in the same line, 
-                // we need to check if the enpassent would move the king into check!!
-                // really painful condition!!@!
-                uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
-                uint64 propogator = (~allPieces) | enPassentCapturedPiece | pawn;
-                uint64 causesCheck = (eastAttacks(enemyRooks, propogator) | westAttacks(enemyRooks, propogator)) & 
-                                     (pos->kings & myPieces);
-                if (!causesCheck)
-                {
-                    addCompactPawnMoves(&nMoves, &genMoves, bitScan(pawn), dst, CM_FLAG_EP_CAPTURE);
-                }
-            }
-#endif
 
             myPawns ^= pawn;
         }
@@ -3124,7 +3044,7 @@ public:
                 enPassentTarget = BIT(pos->enPassent - 1) << (8 * 5);
             }
         }
-#if EN_PASSENT_GENERATION_NEW_METHOD == 1
+
         if (enPassentTarget)
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
@@ -3161,7 +3081,7 @@ public:
                 epSources ^= pawn;
             }
         }
-#endif
+
         // 1. pawn moves
 
         // checking rank for pawn double pushes
@@ -3206,17 +3126,6 @@ public:
                     nMoves++;
             }
 
-            // en-passent capture isn't possible by a pinned pawn
-            // TODO: think more about it
-            // it's actually possible, if the pawn moves in the 'direction' of the pin
-            // check out the position: rnb1kb1r/ppqp1ppp/2p5/4P3/2B5/6K1/PPP1N1PP/RNBQ3R b kq - 0 6
-            // at depth 2
-#if EN_PASSENT_GENERATION_NEW_METHOD != 1
-            if (dst & enPassentTarget)
-            {
-                nMoves++;
-            }
-#endif
             pinnedPawns ^= pawn;  // same as &= ~pawn (but only when we know that the first set contain the element we want to clear)
         }
 
