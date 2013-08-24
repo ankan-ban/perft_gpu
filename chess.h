@@ -3,10 +3,11 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <conio.h>
+
 #include <string.h>
 #include <assert.h>
-#include <windows.h>
+
+#define S_OK 0
 
 // various compile time settings
 #include "switches.h"
@@ -469,7 +470,7 @@ public:
         displayMoveBB(move2);
     }
 
-    CUDA_CALLABLE_MEMBER static void Utils::displayMoveBB(Move move) 
+    CUDA_CALLABLE_MEMBER static void displayMoveBB(Move move) 
     {
         uint8 r1, c1, r2, c2;
         r1 = (move.src >> 3)+1;

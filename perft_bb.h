@@ -118,11 +118,14 @@ __device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
     // TODO: find the bug and fix it
     size = ALIGN_UP(size, 4096);
     uint32 startOffset = atomicAdd(&preAllocatedMemoryUsed, size);
+
+    /*
     if (startOffset >= PREALLOCATED_MEMORY_SIZE)
     {
         // printf("\nFailed allocating %d bytes\n", size);
-        return E_FAIL;
+        return -1;
     }
+    */
 
     *ptr = (T*) ((uint8 *)preAllocatedBuffer + startOffset);
 

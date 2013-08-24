@@ -1,1 +1,21 @@
-gpu chess move generation experiments 
+gpu chess move generation / perft experiments 
+
+- Move generation uses bitboards
+-- position represented using a set of 6 bitboards
+-- two variations for sliding piece move generation: kogge-stone and magics
+--- three variations of magics: plain, fixed shift fancy, and byte-lookup fancy
+--- table sizes: 2.3 MB, 760KB, 150KB respectively.
+-- kogge stone faster in some cases and fixed shift fancy faster in some
+
+- perft routine can work with or without transposition table support
+
+- peak speeds on overclocked GTX 780:
+
+-- without transposition tables: 
+--- 27 Billion moves per second (pos2 of cpw)
+--- 16 Billion moves per second (starting pos)
+--- 1.5 hours for perft(10) of start position
+
+-- with transposition tables:
+--- start position perft(11) in 1 hour!
+

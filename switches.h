@@ -131,7 +131,7 @@
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
 
 // intel core 2 doesn't have popcnt instruction
-#define USE_POPCNT 1
+#define USE_POPCNT 0
 
 // pentium 4 doesn't have fast HW bitscan
 #define USE_HW_BITSCAN 1
