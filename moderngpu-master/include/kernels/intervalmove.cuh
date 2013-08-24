@@ -54,7 +54,7 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalExpand(int destCount,
 	typedef MGPU_LAUNCH_PARAMS Params;
 	const int NT = Params::NT;
 	const int VT = Params::VT;
-	typedef typename std::iterator_traits<ValuesIt>::value_type T;
+	typedef /*typename std::iterator_traits<ValuesIt>::value_type*/ int T;
 
 	union Shared {
 		int indices[NT * (VT + 1)];
@@ -107,7 +107,7 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalExpandGenValues(int destCount,
 	typedef MGPU_LAUNCH_PARAMS Params;
 	const int NT = Params::NT;
 	const int VT = Params::VT;
-	typedef typename std::iterator_traits<ValuesIt>::value_type T;
+	typedef /*typename std::iterator_traits<ValuesIt>::value_type*/ int T;
 
 	union Shared {
 		int indices[NT * (VT + 1)];
@@ -255,7 +255,7 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMove(int moveCount,
 	}
 
 	// Gather the data into register.
-	typedef typename std::iterator_traits<InputIt>::value_type T;
+	typedef /*typename std::iterator_traits<InputIt>::value_type*/ int T;
 	T data[VT];
 	if(Gather)
 		DeviceGather<NT, VT>(moveCount, input_global, gather, tid, data, false);

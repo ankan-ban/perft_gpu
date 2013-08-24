@@ -109,6 +109,12 @@ void removeNewLine(char *str)
     }
 }
 
+
+__global__ void testKernel()
+{
+    printf("\nHello cuda world!\n");
+}
+
 int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
@@ -146,6 +152,8 @@ int main(int argc, char *argv[])
     QueryPerformanceCounter(&count1);
     QueryPerformanceFrequency (&freq);
 
+
+
     char line[1024];
     int j=0;
     while(fgets(line,1024,fpInp))
@@ -166,8 +174,20 @@ int main(int argc, char *argv[])
         if (err != S_OK)
             printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
         cudaMemset(gpu_perft, 0, sizeof(uint64));
-        //perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu, gShallowTT2_cpu);
+#if USE_TRANSPOSITION_TABLE == 1
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, 
+            gTranspositionTable_cpu, 
+            gTTDepth2_cpu,
+            gTTDepth3_cpu, 
+            gTTDepth4_cpu, 
+            gTTDepth5_cpu, 
+            gTTDepth6_cpu, 
+            gTTDepth7_cpu, 
+            gTTDepth8_cpu, 
+            gTTDepth9_cpu);
+#else
+        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+#endif
 
         uint64 res;
         err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
@@ -333,7 +353,16 @@ int main(int argc, char *argv[])
         EventTimer gputime;
         gputime.start();
 #if USE_TRANSPOSITION_TABLE == 1
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, gTranspositionTable_cpu, gShallowTT_cpu, gShallowTT2_cpu);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, 
+            gTranspositionTable_cpu, 
+            gTTDepth2_cpu,
+            gTTDepth3_cpu, 
+            gTTDepth4_cpu, 
+            gTTDepth5_cpu, 
+            gTTDepth6_cpu, 
+            gTTDepth7_cpu, 
+            gTTDepth8_cpu, 
+            gTTDepth9_cpu);
 #else
         perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
 #endif
@@ -341,7 +370,7 @@ int main(int argc, char *argv[])
         if (cudaGetLastError() < 0)
             printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
 
-        cudaDeviceSynchronize();
+        //cudaDeviceSynchronize();
 
         uint64 res;
         err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
@@ -349,7 +378,7 @@ int main(int argc, char *argv[])
             printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
 
         printf("\nGPU Perft %d: %llu,   ", depth, res);
-        printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) ((res/gputime.elapsed())*1000.0));
+        printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
 
         cudaFree(gpuBoard);
         cudaFree(gpu_perft);

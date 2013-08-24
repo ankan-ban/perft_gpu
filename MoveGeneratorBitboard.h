@@ -189,14 +189,25 @@ __device__ ZobristRandoms   gZob;                   // zobrist keys
 // shallow and deep transposition tables (used for both read and write using regular load/stores)
 #if USE_TRANSPOSITION_TABLE == 1
 
-__device__ TT_Entry         *gTranspositionTable;
-__device__ uint64           *gShallowTT;
-__device__ uint64           *gShallowTT2;
+__device__ TT_Entry         *gTranspositionTable;   // for other depths (or for depths that are not launched in parallel)
+__device__ uint64           *gTTDepth2;             // for depth 2
+__device__ uint64           *gTTDepth3;             // for depth 3
+
+// these are only used when USE_SEPERATE_TT_FOR_EACH_LEVEL is set
+__device__ uint64           *gTTDepth4;             // for depth 4
+__device__ HashEntryPerft   *gTTMid[20];            // transposition tables for other depths that are launched in parallel
 
 // cpu pointers of the above pointers (used by cudaMalloc and cudaFree)
 TT_Entry         *gTranspositionTable_cpu;
-uint64           *gShallowTT_cpu;
-uint64           *gShallowTT2_cpu;
+uint64           *gTTDepth2_cpu;
+uint64           *gTTDepth3_cpu;
+uint64           *gTTDepth4_cpu;
+
+HashEntryPerft   *gTTDepth5_cpu;
+HashEntryPerft   *gTTDepth6_cpu;
+HashEntryPerft   *gTTDepth7_cpu;
+HashEntryPerft   *gTTDepth8_cpu;
+HashEntryPerft   *gTTDepth9_cpu;
 
 #endif
 
@@ -988,20 +999,68 @@ public:
         cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
 
         // first shallow TT (for storing depth 3 positions)
-        res = cudaMalloc(&gShallowTT_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
+        res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
         if (res != S_OK)
         {
-            printf("\nFailed to allocate GPU Shallow transposition table of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
+            printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
         }
-        cudaMemset(gShallowTT_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
+        cudaMemset(gTTDepth3_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
 
-        // second transposition table (for storing depth 2 positions)
-        res = cudaMalloc(&gShallowTT2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
+        // second shallow transposition table (for storing depth 2 positions)
+        res = cudaMalloc(&gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
         if (res != S_OK)
         {
-            printf("\nFailed to allocate GPU Shallow transposition table2 of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
+            printf("\nFailed to allocate GPU depth2 transposition table of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
         }
-        cudaMemset(gShallowTT2_cpu, 0, SHALLOW_TT2_SIZE * sizeof(uint64));
+        cudaMemset(gTTDepth2_cpu, 0, SHALLOW_TT2_SIZE * sizeof(uint64));
+
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+        // additional transposition tables
+
+        // simple uint64 table for depth 4
+        res = cudaMalloc(&gTTDepth4_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth 4 TT of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth4_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
+
+        // mid level transposition tables (deptth 5-9)
+        res = cudaMalloc(&gTTDepth5_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth5 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth5_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
+
+        res = cudaMalloc(&gTTDepth6_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth6 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth6_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
+
+        res = cudaMalloc(&gTTDepth7_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth7 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth7_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
+
+        res = cudaMalloc(&gTTDepth8_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth8 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth8_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
+
+        res = cudaMalloc(&gTTDepth9_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate depth9 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
+        }
+        cudaMemset(gTTDepth9_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
+#endif
 
 #endif 
        
@@ -2015,8 +2074,7 @@ public:
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
 
-            uint64 epSources = ((chance == WHITE) ? southEastOne(enPassentTarget) | southWestOne(enPassentTarget) : 
-                                                    northEastOne(enPassentTarget) | northWestOne(enPassentTarget)) & myPawns;
+            uint64 epSources = (eastOne(enPassentCapturedPiece) | westOne(enPassentCapturedPiece)) & myPawns;
 
             while (epSources)
             {
@@ -2544,8 +2602,8 @@ public:
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
 
-            uint64 epSources = ((chance == WHITE) ? southEastOne(enPassentTarget) | southWestOne(enPassentTarget) : 
-                                                    northEastOne(enPassentTarget) | northWestOne(enPassentTarget)) & myPawns;
+            uint64 epSources = (eastOne(enPassentCapturedPiece) | westOne(enPassentCapturedPiece)) & myPawns;
+
 
             while (epSources)
             {
@@ -2994,6 +3052,11 @@ public:
     CUDA_CALLABLE_MEMBER static uint32 countMoves (HexaBitBoardPosition *pos, uint8 chance)
 #endif
     {
+#if COUNT_NUM_COUNT_MOVES == 1        
+#ifdef __CUDA_ARCH__
+        atomicAdd(&numCountMoves, 1);
+#endif
+#endif
         uint32 nMoves = 0;
 
         uint64 allPawns     = pos->pawns & RANKS2TO7;    // get rid of game state variables
@@ -3049,8 +3112,8 @@ public:
         {
             uint64 enPassentCapturedPiece = (chance == WHITE) ? southOne(enPassentTarget) : northOne(enPassentTarget);
 
-            uint64 epSources = ((chance == WHITE) ? southEastOne(enPassentTarget) | southWestOne(enPassentTarget) : 
-                                                    northEastOne(enPassentTarget) | northWestOne(enPassentTarget)) & myPawns;
+            uint64 epSources = (eastOne(enPassentCapturedPiece) | westOne(enPassentCapturedPiece)) & myPawns;
+
 
             while (epSources)
             {
@@ -3497,7 +3560,21 @@ public:
 
         if (move.getFlags() == CM_FLAG_DOUBLE_PAWN_PUSH)
         {
-            pos->enPassent = (move.getFrom() & 7) + 1;      // store file + 1
+            // only mark en-passent if there actually is a en-passent capture possible in next move
+            uint64 allPawns     = pos->pawns & RANKS2TO7;    // get rid of game state variables
+            uint64 allPieces    = pos->kings |  allPawns | pos->knights | pos->bishopQueens | pos->rookQueens;
+            uint64 blackPieces  = allPieces & (~pos->whitePieces);
+            uint64 enemyPieces  = (chance == WHITE) ? blackPieces : pos->whitePieces;
+            uint64 enemyPawns   = allPawns & enemyPieces;
+            
+
+            // possible enemy pieces that can do en-passent capture in next move
+            uint64 epSources = (eastOne(dst) | westOne(dst)) & enemyPawns;
+
+            if (epSources)
+            {
+                pos->enPassent =  (move.getFrom() & 7) + 1;      // store file + 1
+            }
         }
 
         if (updateHash)

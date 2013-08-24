@@ -1,4 +1,6 @@
 // functions for computing perft using bitboard board representation
+
+// the routines that actually generate the moves
 #include "MoveGeneratorBitboard.h"
 
 #if USE_PREALLOCATED_MEMORY == 1
@@ -10,6 +12,21 @@ __device__ uint32  preAllocatedMemoryUsed;
 #if USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN == 1
 #include "moderngpu-master/include/kernels/scan.cuh"
 #include "moderngpu-master/include/kernels/intervalmove.cuh"
+#endif
+
+
+#if COUNT_NUM_COUNT_MOVES == 1
+__device__ uint64 numCountMoves;
+#endif
+
+#if PRINT_HASH_STATS == 1
+// stats for each depth
+// numProbes - no. of times hash table was probed (looked up)
+// numHits   - no. of times we got what we wanted
+// numWrites - no. of times an entry was written or updated in hash table
+__device__ uint64  numProbes[MAX_GAME_LENGTH];
+__device__ uint64  numHits[MAX_GAME_LENGTH];
+__device__ uint64  numStores[MAX_GAME_LENGTH];
 #endif
 
 // helper routines for CPU perft
@@ -405,8 +422,11 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
     // basically check if all threads in the warp are going to atomic add to the same counter, 
     // and if so perform warpReduce and do a single atomic add
 
-    uint64 *firstLaneCounter = (uint64*) __shfl((int) perftCounter, 0);
-    if (__all(firstLaneCounter == perftCounter))
+    // last 32 bits of counter pointer
+    int counterIndex = (int) (((uint64) perftCounter) & 0xFFFFFFFF);
+    int firstLaneCounter = __shfl(counterIndex, 0);
+
+    if (__all(firstLaneCounter == counterIndex))
     {
         warpReduce(nMoves);
 
@@ -522,7 +542,8 @@ __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition 
                                                            uint32 *parentCounters, int *indices,  CMove *moves, 
                                                            uint64 *hashTable, uint64 hashBits, uint64 indexBits,
                                                            HexaBitBoardPosition *outPositions, uint64 *outHashes,
-                                                           uint32 *moveCounts, uint32 *perftCountersCurrentDepth, int nThreads)
+                                                           uint32 *moveCounts, uint32 *perftCountersCurrentDepth, 
+                                                           int nThreads, int depth)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -541,13 +562,17 @@ __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition 
         uint8 color = pos.chance;
         hash = makeMoveAndUpdateHash(&pos, hash, move, color);
 
-
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numProbes[depth], 1);
+#endif
         // check in transposition table
         uint64 entry = hashTable[hash & indexBits];
         if ((entry & hashBits) == (hash & hashBits))
         {
             // hash hit
-            //printf("h ");
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[depth], 1);
+#endif
             atomicAdd(perftCounter, entry & indexBits);
             pos.whitePieces = 0;    // mark it invalid so that generatemoves doesn't generate moves
             hash = 0;               // mark it invalid so that perft3 to perft2 kernel doesn't process this
@@ -568,10 +593,11 @@ __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition 
 
 // compute perft N from perft N-1 (using excessive atomic adds)
 // also store perft (N-1) entry in the given hash table (hashes[] array is for positions at N-1 level)
+// 'depth' is the value of (n-1)
 __global__ void calcPerftNFromPerftNminus1(uint32 *perftNCounters, int *indices, 
                                            uint32 *perftNminus1Counters, uint64 *hashes,
                                            uint64 *hashTable, uint64 hashBits, uint64 indexBits,
-                                           int nThreads)
+                                           int nThreads, int depth)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -592,6 +618,9 @@ __global__ void calcPerftNFromPerftNminus1(uint32 *perftNCounters, int *indices,
             // store in hash table
             // it's assumed that perft value will fit in remaining (~hashMask) bits
             hashTable[hash & indexBits] = (hash  & hashBits) | (perftNminus1) ;
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numStores[depth], 1);
+#endif
         }
     }
 }
@@ -825,6 +854,7 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition **positions, CMove *mov
         // The function takes a integer base number, takes an integer multiplier and performs integer addition to populate the output
         // We typecast the firstLevelChildBoards as integer to get the base number
         // and pass sizeof(HexaBitBoardPosition) as the multiplier
+        // Ankan - this won't work with 64 bit build!
         mgpu::IntervalExpandDGenValues(numSecondLevelMoves, secondLevelMoveCounts, (int) firstLevelChildBoards,     // WARNING: typecasting pointer to integer
                                        sizeof(HexaBitBoardPosition), numFirstLevelMoves, (int *) secondLevelBoardPointers, 
                                        childStream, scratchSpace);
@@ -866,7 +896,7 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition **positions, CMove *mov
         uint32 nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
 
         // count the moves that would be generated by childs
-        makemove_and_count_moves_single_level<<<nBlocks, BLOCK_SIZE, 0, childStream>>>(firstLevelBoardPointers, firstLevelChildMoves, shMem.allFirstLevelChildBoards, secondLevelMoveCounts, numFirstLevelMoves);
+        makemove_and_count_moves_single_level<true><<<nBlocks, BLOCK_SIZE, 0, childStream>>>(firstLevelBoardPointers, firstLevelChildMoves, shMem.allFirstLevelChildBoards, secondLevelMoveCounts, numFirstLevelMoves);
         cudaDeviceSynchronize();
     }
 
@@ -1103,6 +1133,9 @@ __global__ void perft_bb_gpu_depth4(HexaBitBoardPosition **positions, CMove *mov
         // The function takes a integer base number, takes an integer multiplier and performs integer addition to populate the output
         // We typecast the firstLevelChildBoards as integer to get the base number
         // and pass sizeof(HexaBitBoardPosition) as the multiplier
+
+        // Ankan - this will also not work with 64 bit
+        // TODO: move to base + array of indices method, instead of array of pointers
         mgpu::IntervalExpandDGenValues(numSecondLevelMoves, secondLevelMoveCounts, (int) firstLevelChildBoards,     // WARNING: typecasting pointer to integer
                                        sizeof(HexaBitBoardPosition), numFirstLevelMoves, (int *) secondLevelBoardPointers, 
                                        childStream, scratchSpace);
@@ -1150,6 +1183,7 @@ __global__ void perft_bb_gpu_depth4(HexaBitBoardPosition **positions, CMove *mov
         deviceMalloc(&thirdLevelBoardPointers, sizeof(void *) * numThirdLevelMoves);
         
         // 9. now run interval expand to get thirdLevelBoardPointers filled
+        // Ankan - won't work on 64 bit! Switch to base + indices
         mgpu::IntervalExpandDGenValues(numThirdLevelMoves, thirdLevelMoveCounts, (int) secondLevelChildBoards,     // WARNING: typecasting pointer to integer
                                        sizeof(HexaBitBoardPosition), numSecondLevelMoves, (int *) thirdLevelBoardPointers, 
                                        childStream, scratchSpace2);
@@ -1350,11 +1384,19 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
     // 2. the board position         (one item per level)
     // 3. generated moves            (upto MAX_MOVES item per level)
     HexaBitBoardPosition *boardStack        = (HexaBitBoardPosition *)  serialStack;
-    HexaBitBoardPosition **boardPtrStack    = (HexaBitBoardPosition **) ((int)serialStack + (16 * 1024));
-    CMove *movesStack                       = (CMove *)                 ((int)serialStack + (20 * 1024));
+    HexaBitBoardPosition **boardPtrStack    = (HexaBitBoardPosition **) ((char *)serialStack + (16 * 1024));
+    CMove *movesStack                       = (CMove *)                 ((char *)serialStack + (20 * 1024));
+
+#if COUNT_NUM_COUNT_MOVES == 1
+    numCountMoves = 0ull;
+#endif
 
     *boardPtrStack = pos;   // put the given board in the board ptr stack
     perft_bb_gpu_recursive_launcher(boardPtrStack, NULL, globalPerftCounter, depth, movesStack, boardStack, boardPtrStack + 1, launchDepth);
+
+#if COUNT_NUM_COUNT_MOVES == 1
+    printf("Total no. of times countMoves was called: %llu \n", numCountMoves);
+#endif
 }
 
 
@@ -1364,10 +1406,26 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
 //--------------------------------------
 
 #if USE_TRANSPOSITION_TABLE == 1
+
+// look up the transposition table for an entry
+
+// single slot entry assumed
+__device__ __forceinline__ HashEntryPerft lookupTTForDepth(uint64 hash, int depth)
+{
+    HashEntryPerft entry;
+#ifdef __CUDA_ARCH__
+    // stupid CUDA compiler can't see that I need 128 bit atomic reads/writes!
+    uint4 val = gTTMid[depth][hash & (TT_INDEX_BITS)].rawVal;
+    entry.rawVal = val;
+#endif
+    return entry;
+}
+
+
 // look up the transposition table for an entry
 __device__ __forceinline__ TT_Entry lookupTT(uint64 hash)
 {
-#if __CUDA_ARCH__
+#ifdef __CUDA_ARCH__
         // stupid CUDA compiler can't see that I need 128 bit atomic reads/writes!
 #if USE_DUAL_SLOT_TT == 1
         uint4 mostRecent = gTranspositionTable[hash & (TT_INDEX_BITS)].mostRecent.rawVal;
@@ -1413,7 +1471,7 @@ __device__ __forceinline__ bool searchTTEntry(TT_Entry &entry, uint64 hash, uint
 
 __device__ __forceinline__ void storeUpdatedTTEntry(TT_Entry &entry, uint64 hash)
 {
-#if __CUDA_ARCH__
+#ifdef __CUDA_ARCH__
 #if USE_DUAL_SLOT_TT == 1
         gTranspositionTable[hash & (TT_INDEX_BITS)].mostRecent.rawVal = entry.mostRecent.rawVal;
         gTranspositionTable[hash & (TT_INDEX_BITS)].deepest.rawVal    = entry.deepest.rawVal;
@@ -1499,7 +1557,7 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         hash = makeMoveAndUpdateHash(&pos, hashes[index], move, color);
 
         color = !color;
-        uint64 entry = gShallowTT[hash & (SHALLOW_TT_INDEX_BITS)];
+        uint64 entry = gTTDepth3[hash & (SHALLOW_TT_INDEX_BITS)];
         if ((entry & SHALLOW_TT_HASH_BITS) == (hash & SHALLOW_TT_HASH_BITS))
         {
             // hash hit
@@ -1613,9 +1671,9 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
             (currentLevelBoards, currentLevelHashes, shMem.perft3Counters, 
              shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
-             gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
+             gTTDepth2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
              firstLevelChildBoards, shMem.firstLevelHashes, (uint32 *) secondLevelMoveCounts, 
-             shMem.perft2Counters, numFirstLevelMoves);
+             shMem.perft2Counters, numFirstLevelMoves, 2);
 
         // 2. secondLevelMoveCounts now has individual move counts, run a scan on it
         int *pNumSecondLevelMoves = secondLevelMoveCounts + numFirstLevelMoves;
@@ -1669,7 +1727,7 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
             nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
             calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
                 (shMem.perft3Counters, firstToCurrentLevelIndices, shMem.perft2Counters, shMem.firstLevelHashes, 
-                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numFirstLevelMoves);
+                 gTTDepth2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numFirstLevelMoves, 2);
 
             cudaDeviceSynchronize();
         }
@@ -1684,8 +1742,8 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         atomicAdd(perftCounters[index], perftVal);
 
         // store in hash table
-        gShallowTT[hash & (SHALLOW_TT_INDEX_BITS)] = (hash       & SHALLOW_TT_HASH_BITS)  |
-                                                     (perftVal   & SHALLOW_TT_INDEX_BITS) ;
+        gTTDepth3[hash & (SHALLOW_TT_INDEX_BITS)] = (hash       & SHALLOW_TT_HASH_BITS)  |
+                                                    (perftVal   & SHALLOW_TT_INDEX_BITS) ;
     }
 }
 
@@ -1720,15 +1778,33 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         color = !color;
 
         // look up the transposition table
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numProbes[4], 1);
+#endif
+
         uint64 perftVal;
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+        uint64 entry = gTTDepth4[hash & SHALLOW_TT_INDEX_BITS];        
+        if ((entry & SHALLOW_TT_HASH_BITS) == (hash & SHALLOW_TT_HASH_BITS))
+        {
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[4], 1);
+#endif
+            atomicAdd(perftCounters[index], entry & SHALLOW_TT_INDEX_BITS);
+        }
+#else
         lookupHash = hash ^ (ZOB_KEY(depth) * 4);
         entry = lookupTT(lookupHash);
         if (searchTTEntry(entry, lookupHash, &perftVal))
         {
             // hash hit: no need to process this position further
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[4], 1);
+#endif
             // TODO: might want to do a warp wide reduction before atomic add
             atomicAdd(perftCounters[index], perftVal);
         }
+#endif
         else
         {
             nMoves = countMoves(&pos, color);
@@ -1845,9 +1921,9 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
             (currentLevelBoards, currentLevelHashes, shMem.perft4Counters, 
              shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
-             gShallowTT, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, 
+             gTTDepth3, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, 
              firstLevelChildBoards, shMem.firstLevelHashes, (uint32 *) secondLevelMoveCounts, 
-             shMem.perft3Counters, numFirstLevelMoves);
+             shMem.perft3Counters, numFirstLevelMoves, 3);
 
         //cudaDeviceSynchronize();
         //printf("\nAfter calling makemove_and_count_moves_single_level_hash!\n");
@@ -1916,9 +1992,9 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
             makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
                 (firstLevelChildBoards, shMem.firstLevelHashes, shMem.perft3Counters, 
                  secondToFirstLevelIndices, secondLevelChildMoves, 
-                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
+                 gTTDepth2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, 
                  secondLevelChildBoards, secondLevelHashes, (uint32 *) thirdLevelMoveCounts, 
-                 shMem.perft2Counters, numSecondLevelMoves);
+                 shMem.perft2Counters, numSecondLevelMoves, 2);
 
             //cudaDeviceSynchronize();
             //printf("\nAfter calling makemove_and_count_moves_single_level_hash to generate second level boards, and do many things!\n");
@@ -1981,7 +2057,7 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
             nBlocks = (numSecondLevelMoves - 1) / BLOCK_SIZE + 1;
             calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
                 (shMem.perft3Counters, secondToFirstLevelIndices, shMem.perft2Counters, secondLevelHashes, 
-                 gShallowTT2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numSecondLevelMoves);
+                 gTTDepth2, SHALLOW_TT2_HASH_BITS, SHALLOW_TT2_INDEX_BITS, numSecondLevelMoves, 2);
 
 
             //cudaDeviceSynchronize();
@@ -1992,7 +2068,7 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
             nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
             calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
                 (shMem.perft4Counters, firstToCurrentLevelIndices, shMem.perft3Counters, shMem.firstLevelHashes,
-                 gShallowTT, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, numFirstLevelMoves);
+                 gTTDepth3, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, numFirstLevelMoves, 3);
 
 
             //cudaDeviceSynchronize();
@@ -2013,7 +2089,16 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         atomicAdd(perftCounters[index], perftVal);
 
         // store perft val in transposition table
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numStores[4], 1);
+#endif
+
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+        gTTDepth4[hash & (SHALLOW_TT_INDEX_BITS)] = (hash       & SHALLOW_TT_HASH_BITS)  |
+                                                    (perftVal   & SHALLOW_TT_INDEX_BITS) ;
+#else
         storeTTEntry(entry, lookupHash, 4, perftVal);
+#endif
     }
 }
 
@@ -2063,14 +2148,34 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
         }
 
         // look up the transposition table
+
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numProbes[depth], 1);
+#endif
+
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+        HashEntryPerft entry = lookupTTForDepth(hash, depth);
+        if ((entry.hashKey & MID_TT_HASH_BITS) == (hash & MID_TT_HASH_BITS))
+        {
+            // hash hit: no need to process this position further
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[depth], 1);
+#endif
+            atomicAdd(perftCounter, entry.perftVal);
+        }
+#else
         lookupHash = hash ^ (ZOB_KEY(depth) * depth);
         entry = lookupTT(lookupHash);
         if (searchTTEntry(entry, lookupHash, &perftVal))
         {
             // hash hit: no need to process this position further
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[depth], 1);
+#endif
             // TODO: might want to do a warp wide reduction before atomic add
             atomicAdd(perftCounter, perftVal);
         }
+#endif
         else
         {
             nMoves = countMoves(&pos, color);
@@ -2190,8 +2295,22 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
         // add it to perftCounter for this thread... and store it in TT
         atomicAdd(perftCounter, perftVal);
 
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numStores[depth], 1);
+#endif
+
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+        HashEntryPerft entry;
+        entry.perftVal = perftVal;
+        entry.hashKey = hash;
+        entry.depth = depth;
+#ifdef __CUDA_ARCH__
+        gTTMid[depth][hash & (MID_TT_INDEX_BITS)].rawVal = entry.rawVal;
+#endif
+#else
         // store perft val in transposition table
         storeTTEntry(entry, lookupHash, depth, perftVal);
+#endif
     }
 }
 
@@ -2248,11 +2367,18 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
         }
         
         // look up the transposition table
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numProbes[depth], 1);
+#endif
+
         uint64 lookupHash = newHash ^ (ZOB_KEY(depth) * depth);
 
         TT_Entry entry = lookupTT(lookupHash);
         if (searchTTEntry(entry, lookupHash, &perftVal))
         {
+#if PRINT_HASH_STATS == 1
+            atomicAdd(&numHits[depth], 1);
+#endif
             return perftVal;
         }
 
@@ -2266,6 +2392,9 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
         }
 
         // store perft val in transposition table
+#if PRINT_HASH_STATS == 1
+        atomicAdd(&numStores[depth], 1);
+#endif
         storeTTEntry(entry, lookupHash, depth, perftVal);
     }
 
@@ -2274,15 +2403,30 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
 
 // the starting kernel for perft (which makes use of a hash table)
 __global__ void perft_bb_driver_gpu_hash(HexaBitBoardPosition *pos, uint64 *globalPerftCounter, int depth, void *serialStack, void *devMemory, int launchDepth, 
-                                         TT_Entry *devTT, uint64 *devShallowTT, uint64 *devShallowTT2)
+                                         TT_Entry *devTT,   // transposition table for the rest of the depths
+                                         uint64 *devTT2,    // transposition table for depth 2
+                                         uint64 *devTT3,    // .. for depth 3
+                                         uint64 *devTT4,    // ...
+                                         HashEntryPerft *devTT5,
+                                         HashEntryPerft *devTT6,
+                                         HashEntryPerft *devTT7,
+                                         HashEntryPerft *devTT8,
+                                         HashEntryPerft *devTT9)
 {
     // set device memory pointers
     preAllocatedBuffer = devMemory;
     preAllocatedMemoryUsed = 0;
 
     gTranspositionTable = devTT;
-    gShallowTT  = devShallowTT;
-    gShallowTT2 = devShallowTT2;
+    gTTDepth2   = devTT2;
+    gTTDepth3   = devTT3;
+    gTTDepth4   = devTT4;
+
+    gTTMid[5]   = devTT5;
+    gTTMid[6]   = devTT6;
+    gTTMid[7]   = devTT7;
+    gTTMid[8]   = devTT8;
+    gTTMid[9]   = devTT9;
 
     // call the recursive function
     // Three items are stored in the stack
@@ -2290,13 +2434,38 @@ __global__ void perft_bb_driver_gpu_hash(HexaBitBoardPosition *pos, uint64 *glob
     // 2. the board position         (one item per level)
     // 3. generated moves            (upto MAX_MOVES item per level)
     HexaBitBoardPosition *boardStack        = (HexaBitBoardPosition *)  serialStack;
-    HexaBitBoardPosition **boardPtrStack    = (HexaBitBoardPosition **) ((int)serialStack + (16 * 1024));
-    CMove *movesStack                       = (CMove *)                 ((int)serialStack + (20 * 1024));
+    HexaBitBoardPosition **boardPtrStack    = (HexaBitBoardPosition **) ((char *)serialStack + (16 * 1024));
+    CMove *movesStack                       = (CMove *)                 ((char *)serialStack + (20 * 1024));
 
     *boardPtrStack = pos;   // put the given board in the board ptr stack
     uint64 hash = MoveGeneratorBitboard::computeZobristKey(pos);
     //printf("\nOrignal board hash: %X%X\n", HI(hash), LO(hash));
+
+
+#if PRINT_HASH_STATS == 1
+    for (int i=0;i<MAX_GAME_LENGTH;i++)
+    {
+        numProbes[i] = 0;
+        numHits[i] = 0;
+        numStores[i] = 0;
+    }
+#endif
+
+#if COUNT_NUM_COUNT_MOVES == 1
+    numCountMoves = 0ull;
+#endif
     uint64 finalPerfVal = perft_bb_gpu_hash_recursive_launcher(boardPtrStack, hash, NULL, globalPerftCounter, depth, movesStack, boardStack, boardPtrStack+1, launchDepth);
+#if COUNT_NUM_COUNT_MOVES == 1
+    printf("Total no. of times countMoves was called: %llu \n", numCountMoves);
+#endif
+
+#if PRINT_HASH_STATS == 1
+    printf("\nHash stats per depth\n");
+    printf("depth   hash probes      hash hits    hash stores\n");
+    for (int i=2; i<=depth; i++)
+        printf("%5d   %11llu    %11llu    %11llu\n", i, numProbes[i], numHits[i], numStores[i]);
+#endif
+
     *globalPerftCounter = finalPerfVal;
 }
 

@@ -50,6 +50,10 @@
 
 #if USE_TRANSPOSITION_TABLE == 1
 
+// Workaround for not being able to allocate > 1 GB at a time
+// use many small transposition tables - one for each level (only for levels that are launched in parallel)
+#define USE_SEPERATE_TT_FOR_EACH_LEVEL 0
+
 // store two positions (most recent and deepest) in every entry of hash table
 // default is to store deepest only
 #define USE_DUAL_SLOT_TT 1
@@ -59,6 +63,7 @@
 // each entry is of 16 bytes
 // 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
 // 24 Bits: 512 MB (when dual entry is used)
+// 25 bits: 1 GB (when dual entry is used)
 #define TT_BITS     24
 #define TT_SIZE     (1 << TT_BITS)
 
@@ -70,6 +75,8 @@
 
 // A transposition table for storing only depth 3 positions
 // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
+// 27 bits: 1 GB
+// 28 bits: 2 GB
 #define SHALLOW_TT_BITS         26
 #define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
 #define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
@@ -77,13 +84,30 @@
 
 // A third(!) transposition table for storing positions only at depth 2
 // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
-#define SHALLOW_TT2_BITS         26 
+// 27 bits: 1 GB
+// 29 bits: 4 GB
+#define SHALLOW_TT2_BITS         26
 #define SHALLOW_TT2_SIZE         (1 << SHALLOW_TT2_BITS)
 #define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
 #define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
 
 // for the two shallow transposition tables above, the perft value is stored in index bits
 // as perft 2 and perft 3 should always fit even in a 16 bit number
+
+// additional transposition tables for each level that is launched as a parallel kernel
+#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
+// depth 4 transposition table also has perft value stored in index bits (27 bits)
+
+// transposition tables of lower depth are normal 16-bit entries (containing the perft value and hash)
+// transposition tables for dpeths that are not processed in parallel are dual entry slots (32 bit per entry)
+    
+// 26 bits: 1 GB
+#define MID_TT_BITS         26
+#define MID_TT_SIZE         (1 << MID_TT_BITS)
+#define MID_TT_INDEX_BITS   (MID_TT_SIZE - 1)
+#define MID_TT_HASH_BITS    (ALLSET ^ MID_TT_INDEX_BITS)
+#endif
+
 
 
 #if USE_DUAL_SLOT_TT == 1
@@ -94,6 +118,11 @@
 
 #endif
 
+// count the no of times countMoves() got called (useful to find hash table effectiveness)
+#define COUNT_NUM_COUNT_MOVES 0
+
+// print  various hash statistics
+#define PRINT_HASH_STATS 0
 
 // move generation functions templated on chance
 #define USE_TEMPLATE_CHANCE_OPT 1
