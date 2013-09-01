@@ -3,11 +3,11 @@
 // the routines that actually generate the moves
 #include "MoveGeneratorBitboard.h"
 
-#if USE_PREALLOCATED_MEMORY == 1
+//#if USE_PREALLOCATED_MEMORY == 1
            void   *preAllocatedBufferHost;
 __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;
-#endif
+//#endif
 
 #if USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN == 1
 #include "moderngpu-master/include/kernels/scan.cuh"
@@ -113,10 +113,8 @@ template<typename T>
 __device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
 {
 #if USE_PREALLOCATED_MEMORY == 1
-    // align up the size to nearest 4096 bytes
-    // There is some bug somewhere that causes problems if the pointer returned is not aligned (or aligned to lesser number)
-    // TODO: find the bug and fix it
-    size = ALIGN_UP(size, 4096);
+    // align up the size to nearest 16 bytes (as some structures might have assumed 16 byte alignment?)
+    size = ALIGN_UP(size, 16);
     uint32 startOffset = atomicAdd(&preAllocatedMemoryUsed, size);
 
     /*
@@ -318,7 +316,9 @@ union sharedMemAllocs
     };
 };
 
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4 )
+#endif
 __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition **positions, CMove *moves, uint64 *globalPerftCounter, int nThreads)
 {
 
@@ -358,7 +358,9 @@ __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition **positions, CMov
 // first it makes the move to get the new board and then counts the moves possible on the board
 // positions        - array of pointers to old boards
 // generatedMoves   - moves to be made
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4)
+#endif
 __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions, CMove *generatedMoves, uint64 *globalPerftCounter, int nThreads)
 {
 
@@ -397,7 +399,9 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
 
 // this version gets seperate perft counter per thread
 // perftCounters[] is array of pointers to perft counters - where each thread should atomically add the computed perft
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4)
+#endif
 __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions, CMove *generatedMoves, uint64 **perftCounters, int nThreads)
 {
 
@@ -426,6 +430,7 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
     // and if so perform warpReduce and do a single atomic add
 
     // last 32 bits of counter pointer
+#if 1
     int counterIndex = (int) (((uint64) perftCounter) & 0xFFFFFFFF);
     int firstLaneCounter = __shfl(counterIndex, 0);
 
@@ -441,6 +446,7 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
         }
     }
     else
+#endif
     {
         atomicAdd (perftCounter, nMoves);
     }
@@ -448,7 +454,9 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
 
 
 // this version uses the indices[] array to index into parentPositions[] and parentCounters[] arrays
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4)
+#endif
 __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *parentBoards, uint32 *parentCounters, 
                                                         int *indices, CMove *moves, int nThreads)
 {
@@ -504,7 +512,9 @@ __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *pa
 // and finally counts the no. of moves possible for each element in outPositions.
 // the move counts are returned in moveCounts[] array
 template <bool genBoard>
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4 )
+#endif
 __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **positions, CMove *moves, HexaBitBoardPosition *outPositions, uint32 *moveCounts, int nThreads)
 {
     // exctact one element of work
@@ -539,8 +549,9 @@ __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **pos
 // 4. which perft counter to update and the hash of parent board is also found by 
 //    indexing using indices[] array into parentHashes[]/parentCounters[] arrays
 // 5. clears the perftCountersCurrentDepth[] array passed in
-
+#if LIMIT_REGISTER_USE == 1
 __launch_bounds__( BLOCK_SIZE, 4 )
+#endif
 __global__ void makemove_and_count_moves_single_level_hash(HexaBitBoardPosition *parentBoards, uint64 *parentHashes, 
                                                            uint32 *parentCounters, int *indices,  CMove *moves, 
                                                            uint64 *hashTable, uint64 hashBits, uint64 indexBits,
@@ -1560,11 +1571,11 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         hash = makeMoveAndUpdateHash(&pos, hashes[index], move, color);
 
         color = !color;
-        uint64 entry = gTTDepth3[hash & (SHALLOW_TT_INDEX_BITS)];
-        if ((entry & SHALLOW_TT_HASH_BITS) == (hash & SHALLOW_TT_HASH_BITS))
+        uint64 entry = gTTDepth3[hash & (SHALLOW_TT3_INDEX_BITS)];
+        if ((entry & SHALLOW_TT3_HASH_BITS) == (hash & SHALLOW_TT3_HASH_BITS))
         {
             // hash hit
-            atomicAdd(perftCounters[index], entry & SHALLOW_TT_INDEX_BITS);
+            atomicAdd(perftCounters[index], entry & SHALLOW_TT3_INDEX_BITS);
         }
         else
         {
@@ -1745,8 +1756,8 @@ __global__ void perft_bb_gpu_depth3_hash(HexaBitBoardPosition **positions, uint6
         atomicAdd(perftCounters[index], perftVal);
 
         // store in hash table
-        gTTDepth3[hash & (SHALLOW_TT_INDEX_BITS)] = (hash       & SHALLOW_TT_HASH_BITS)  |
-                                                    (perftVal   & SHALLOW_TT_INDEX_BITS) ;
+        gTTDepth3[hash & (SHALLOW_TT3_INDEX_BITS)] = (hash       & SHALLOW_TT3_HASH_BITS)  |
+                                                     (perftVal   & SHALLOW_TT3_INDEX_BITS) ;
     }
 }
 
@@ -1762,8 +1773,7 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
     HexaBitBoardPosition pos;
     CMove move;
     uint8 color;
-    uint64 hash, lookupHash;
-    TT_Entry entry;
+    uint64 hash;
 
     // shared memory structure containing moves generated by each thread in the thread block
     __shared__ sharedMemAllocs shMem;
@@ -1785,29 +1795,14 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         atomicAdd(&numProbes[4], 1);
 #endif
 
-        uint64 perftVal;
-#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
-        uint64 entry = gTTDepth4[hash & SHALLOW_TT_INDEX_BITS];        
-        if ((entry & SHALLOW_TT_HASH_BITS) == (hash & SHALLOW_TT_HASH_BITS))
+        uint64 entry = gTTDepth4[hash & SHALLOW_TT4_INDEX_BITS];        
+        if ((entry & SHALLOW_TT4_HASH_BITS) == (hash & SHALLOW_TT4_HASH_BITS))
         {
 #if PRINT_HASH_STATS == 1
             atomicAdd(&numHits[4], 1);
 #endif
-            atomicAdd(perftCounters[index], entry & SHALLOW_TT_INDEX_BITS);
+            atomicAdd(perftCounters[index], entry & SHALLOW_TT4_INDEX_BITS);
         }
-#else
-        lookupHash = hash ^ (ZOB_KEY(depth) * 4);
-        entry = lookupTT(lookupHash);
-        if (searchTTEntry(entry, lookupHash, &perftVal))
-        {
-            // hash hit: no need to process this position further
-#if PRINT_HASH_STATS == 1
-            atomicAdd(&numHits[4], 1);
-#endif
-            // TODO: might want to do a warp wide reduction before atomic add
-            atomicAdd(perftCounters[index], perftVal);
-        }
-#endif
         else
         {
             nMoves = countMoves(&pos, color);
@@ -1924,7 +1919,7 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         makemove_and_count_moves_single_level_hash<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
             (currentLevelBoards, currentLevelHashes, shMem.perft4Counters, 
              shMem.firstToCurrentLevelIndices, firstLevelChildMoves, 
-             gTTDepth3, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, 
+             gTTDepth3, SHALLOW_TT3_HASH_BITS, SHALLOW_TT3_INDEX_BITS, 
              firstLevelChildBoards, shMem.firstLevelHashes, (uint32 *) secondLevelMoveCounts, 
              shMem.perft3Counters, numFirstLevelMoves, 3);
 
@@ -2071,7 +2066,7 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
             nBlocks = (numFirstLevelMoves - 1) / BLOCK_SIZE + 1;
             calcPerftNFromPerftNminus1<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
                 (shMem.perft4Counters, firstToCurrentLevelIndices, shMem.perft3Counters, shMem.firstLevelHashes,
-                 gTTDepth3, SHALLOW_TT_HASH_BITS, SHALLOW_TT_INDEX_BITS, numFirstLevelMoves, 3);
+                 gTTDepth3, SHALLOW_TT3_HASH_BITS, SHALLOW_TT3_INDEX_BITS, numFirstLevelMoves, 3);
 
 
             //cudaDeviceSynchronize();
@@ -2096,12 +2091,8 @@ __global__ void perft_bb_gpu_depth4_hash(HexaBitBoardPosition **positions, uint6
         atomicAdd(&numStores[4], 1);
 #endif
 
-#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
-        gTTDepth4[hash & (SHALLOW_TT_INDEX_BITS)] = (hash       & SHALLOW_TT_HASH_BITS)  |
-                                                    (perftVal   & SHALLOW_TT_INDEX_BITS) ;
-#else
-        storeTTEntry(entry, lookupHash, 4, perftVal);
-#endif
+        gTTDepth4[hash & (SHALLOW_TT4_INDEX_BITS)] = (hash       & SHALLOW_TT4_HASH_BITS)  |
+                                                     (perftVal   & SHALLOW_TT4_INDEX_BITS) ;
     }
 }
 

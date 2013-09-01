@@ -991,6 +991,23 @@ public:
 #endif
     }
 
+#ifndef SKIP_CUDA_CODE
+    static void hugeMemset(void *data, uint64 size)
+    {
+		uint8 *mem = (uint8*) data;
+		const uint64 c4G = 4ull * 1024 * 1024 * 1024;
+
+        while (size > c4G)
+        {
+            cudaMemset(mem, 0, c4G);
+			
+			mem  += c4G;
+			size -= c4G;
+        }
+        
+		cudaMemset(mem, 0, size);
+    }
+#endif
 
     static void init()
     {
@@ -1008,15 +1025,16 @@ public:
         {
             printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", TT_SIZE * sizeof(TT_Entry), cudaGetErrorString(res));
         }
-        cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
+
+		hugeMemset(gTranspositionTable_cpu, TT_SIZE * sizeof(TT_Entry));
 
         // first shallow TT (for storing depth 3 positions)
-        res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
+        res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
         if (res != S_OK)
         {
-            printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
+            printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT3_SIZE * sizeof(uint64), cudaGetErrorString(res));
         }
-        cudaMemset(gTTDepth3_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
+        hugeMemset(gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
 
         // second shallow transposition table (for storing depth 2 positions)
         res = cudaMalloc(&gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
@@ -1024,18 +1042,19 @@ public:
         {
             printf("\nFailed to allocate GPU depth2 transposition table of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
         }
-        cudaMemset(gTTDepth2_cpu, 0, SHALLOW_TT2_SIZE * sizeof(uint64));
+        hugeMemset(gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
+
+		// third shallow transposition table (for storing depth 4 positions)
+        res = cudaMalloc(&gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
+        if (res != S_OK)
+        {
+            printf("\nFailed to allocate GPU depth4 transposition table of %d bytes, with error: %s\n", SHALLOW_TT4_SIZE * sizeof(uint64), cudaGetErrorString(res));
+        }
+        hugeMemset(gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
+		
 
 #if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
         // additional transposition tables
-
-        // simple uint64 table for depth 4
-        res = cudaMalloc(&gTTDepth4_cpu, SHALLOW_TT_SIZE * sizeof(uint64));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth 4 TT of %d bytes, with error: %s\n", SHALLOW_TT_SIZE * sizeof(uint64), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth4_cpu, 0, SHALLOW_TT_SIZE * sizeof(uint64));
 
         // mid level transposition tables (deptth 5-9)
         res = cudaMalloc(&gTTDepth5_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
@@ -3572,6 +3591,7 @@ public:
 
         if (move.getFlags() == CM_FLAG_DOUBLE_PAWN_PUSH)
         {
+#if EXACT_EN_PASSENT_FLAGGING == 1
             // only mark en-passent if there actually is a en-passent capture possible in next move
             uint64 allPawns     = pos->pawns & RANKS2TO7;    // get rid of game state variables
             uint64 allPieces    = pos->kings |  allPawns | pos->knights | pos->bishopQueens | pos->rookQueens;
@@ -3584,6 +3604,7 @@ public:
             uint64 epSources = (eastOne(dst) | westOne(dst)) & enemyPawns;
 
             if (epSources)
+#endif
             {
                 pos->enPassent =  (move.getFrom() & 7) + 1;      // store file + 1
             }

@@ -3,6 +3,10 @@
 
 #define PERFT_VERIF_MODE 0
 
+#if PERFT_VERIF_MODE == 1
+#include <windows.h>
+#endif
+
 class EventTimer {
 public:
   EventTimer() : mStarted(false), mStopped(false) {
@@ -379,7 +383,7 @@ int main(int argc, char *argv[])
 
         printf("\nGPU Perft %d: %llu,   ", depth, res);
         printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
-
+	fflush(stdout);
         cudaFree(gpuBoard);
         cudaFree(gpu_perft);
         cudaFree(serial_perft_stack);

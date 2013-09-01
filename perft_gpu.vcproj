@@ -470,6 +470,8 @@
 					>
 					<Tool
 						Name="Cudart Build Rule"
+						NvccCompilation="0"
+						Keep="true"
 						Defines="WIN32"
 					/>
 				</FileConfiguration>
@@ -478,9 +480,13 @@
 					>
 					<Tool
 						Name="Cudart Build Rule"
-						GenerateLineInfo="true"
+						GPUDebugInfo="false"
+						GenerateLineInfo="false"
 						GenerateRelocatableDeviceCode="true"
+						NvccCompilation="0"
 						MaxRegCount="0"
+						PtxAsOptionV="false"
+						Keep="false"
 						FastMath="true"
 						Optimization="2"
 						Runtime="2"

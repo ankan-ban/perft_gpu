@@ -6,6 +6,11 @@
     bool printMoves = false;
 #endif
 
+
+// limit max used registers to 64 for some kernels
+// improves occupancy and performance (but doesn't work with debug info or debug builds)
+#define LIMIT_REGISTER_USE 1
+
 // don't call cudaMalloc/cudaFree from device code, 
 // suballocate from a pre-allocated buffer instead
 // (most of the routines now won't work when this is OFF - i.e, we now rely on this)
@@ -43,6 +48,11 @@
 #define PARALLEL_LAUNCH_LAST_3_LEVELS 1
 #endif
 
+// flag en-passent capture only when it's possible (in next move)
+// default is to flag en-passent on every double pawn push
+// This switch works only using using makeMove()
+// This helps A LOT when using transposition tables (> 50% improvementi n perft(12) time)!
+#define EXACT_EN_PASSENT_FLAGGING 1
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
 // it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
@@ -50,13 +60,13 @@
 
 #if USE_TRANSPOSITION_TABLE == 1
 
-// Workaround for not being able to allocate > 1 GB at a time
+// Workaround for not being able to allocate > 1 GB at a time (on Windoes)
 // use many small transposition tables - one for each level (only for levels that are launched in parallel)
 #define USE_SEPERATE_TT_FOR_EACH_LEVEL 0
 
 // store two positions (most recent and deepest) in every entry of hash table
 // default is to store deepest only
-#define USE_DUAL_SLOT_TT 1
+#define USE_DUAL_SLOT_TT 0
 
 // size of transposition table (in number of entries)
 // must be a power of two
@@ -64,7 +74,7 @@
 // 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
 // 24 Bits: 512 MB (when dual entry is used)
 // 25 bits: 1 GB (when dual entry is used)
-#define TT_BITS     24
+#define TT_BITS     25
 #define TT_SIZE     (1 << TT_BITS)
 
 // bits of the zobrist hash used as index into the transposition table
@@ -73,16 +83,8 @@
 // remaining bits (that are stored per hash entry)
 #define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
 
-// A transposition table for storing only depth 3 positions
-// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
-// 27 bits: 1 GB
-// 28 bits: 2 GB
-#define SHALLOW_TT_BITS         26
-#define SHALLOW_TT_SIZE         (1 << SHALLOW_TT_BITS)
-#define SHALLOW_TT_INDEX_BITS   (SHALLOW_TT_SIZE - 1)
-#define SHALLOW_TT_HASH_BITS    (ALLSET ^ SHALLOW_TT_INDEX_BITS)
 
-// A third(!) transposition table for storing positions only at depth 2
+// A transposition table for storing positions only at depth 2
 // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
 // 27 bits: 1 GB
 // 29 bits: 4 GB
@@ -91,15 +93,37 @@
 #define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
 #define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
 
-// for the two shallow transposition tables above, the perft value is stored in index bits
-// as perft 2 and perft 3 should always fit even in a 16 bit number
+
+
+// A transposition table for storing only depth 3 positions
+// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
+// 27 bits: 1 GB
+// 28 bits: 2 GB
+// 29 bits: 4 GB
+// 30 bits: 8 GB
+#define SHALLOW_TT3_BITS         25
+#define SHALLOW_TT3_SIZE         (1 << SHALLOW_TT3_BITS)
+#define SHALLOW_TT3_INDEX_BITS   (SHALLOW_TT3_SIZE - 1)
+#define SHALLOW_TT3_HASH_BITS    (ALLSET ^ SHALLOW_TT3_INDEX_BITS)
+
+// Transposition table for depth 4
+// 28 bits: 2 GB
+// 29 bits: 4 GB
+#define SHALLOW_TT4_BITS         25
+#define SHALLOW_TT4_SIZE         (1 << SHALLOW_TT4_BITS)
+#define SHALLOW_TT4_INDEX_BITS   (SHALLOW_TT4_SIZE - 1)
+#define SHALLOW_TT4_HASH_BITS    (ALLSET ^ SHALLOW_TT4_INDEX_BITS)
+
+
+// for the three shallow transposition tables above, the perft value is stored in index bits
+// as perft 2, perft 3 and perft 4 should always fit even in a 26 bit number
 
 // additional transposition tables for each level that is launched as a parallel kernel
 #if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
 // depth 4 transposition table also has perft value stored in index bits (27 bits)
 
-// transposition tables of lower depth are normal 16-bit entries (containing the perft value and hash)
-// transposition tables for dpeths that are not processed in parallel are dual entry slots (32 bit per entry)
+// transposition tables of lower depth are normal 16-byte entries (containing the perft value and hash)
+// A single transposition table is used for depths that are not processed in parallel
     
 // 26 bits: 1 GB
 #define MID_TT_BITS         26

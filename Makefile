@@ -7,10 +7,10 @@ default: perft_gpu
 	g++ -c $< -o $@ -msse4.2 -Ofast
 
 %.obj: %.cu $(HEADERS)
-	nvcc -dc $< -o $@ -arch=sm_35 -O3
+	nvcc -dc $< -o $@ -arch=sm_35 -O3 -Xcompiler -O3 
 
 perft_gpu: $(OBJECTS)
-	nvcc $(OBJECTS) -o $@ -arch=sm_35 -lcudadevrt -O3
+	nvcc $(OBJECTS) -o $@ -arch=sm_35 -lcudadevrt -O3 -Xcompiler -O3
 	-rm -f $(OBJECTS)
 
 clean:
