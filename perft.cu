@@ -4,7 +4,7 @@
 #define PERFT_VERIF_MODE 0
 
 #if PERFT_VERIF_MODE == 1
-#include <windows.h>
+#include <time.h>
 #endif
 
 class EventTimer {
@@ -41,17 +41,16 @@ private:
 // for timing CPU code : start
 double gTime;
 #define START_TIMER { \
-    LARGE_INTEGER count1, count2, freq; \
-    QueryPerformanceFrequency (&freq);  \
-    QueryPerformanceCounter(&count1);
+    clock_t start, end; \
+    start = clock();
 
 #define STOP_TIMER \
-    QueryPerformanceCounter(&count2); \
-    gTime = ((double)(count2.QuadPart-count1.QuadPart)*1000.0)/freq.QuadPart; \
+    end = clock(); \
+    gTime = (double)(end - start)/1000.0lf; \
     }
 // for timing CPU code : end
 
-void initGPU()
+void initGPU(TTInfo &TTs)
 {
     int hr;
 
@@ -67,6 +66,11 @@ void initGPU()
 #else
     hr = cudaDeviceSetLimit(cudaLimitMallocHeapSize, 1*1024*1024*1024); // 1 GB
     printf("cudaDeviceSetLimit cudaLimitMallocHeapSize returned %d\n", hr);
+#endif
+
+#if USE_TRANSPOSITION_TABLE == 1
+    // allocate memory for Transposition tables
+    setupHashTables(TTs);
 #endif
 }
 
@@ -123,7 +127,9 @@ int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
 
-    initGPU();
+    TTInfo TransTables;
+    initGPU(TransTables);
+
     MoveGeneratorBitboard::init();
 
 #if PERFT_VERIF_MODE == 1
@@ -152,12 +158,9 @@ int main(int argc, char *argv[])
     cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
     cudaMalloc(&gpu_perft, sizeof(uint64));
 
-    LARGE_INTEGER count1, count2, time, freq;
-    QueryPerformanceCounter(&count1);
-    QueryPerformanceFrequency (&freq);
-
-
-
+    clock_t start, end;
+    start = clock();    
+    
     char line[1024];
     int j=0;
     while(fgets(line,1024,fpInp))
@@ -171,24 +174,16 @@ int main(int argc, char *argv[])
         printf("\n%s", line);
 
         Utils::board088ToHexBB(&testBB, &testBoard);
-        uint32 launchDepth = estimateLaunchDepth(&testBB);
-        launchDepth = min(launchDepth, 7); // don't go too high
+        
+        uint32 launchDepth = 6; //estimateLaunchDepth(&testBB);
+        //launchDepth = min(launchDepth, 7); // don't go too high
 
         cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
         if (err != S_OK)
             printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
         cudaMemset(gpu_perft, 0, sizeof(uint64));
 #if USE_TRANSPOSITION_TABLE == 1
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, 
-            gTranspositionTable_cpu, 
-            gTTDepth2_cpu,
-            gTTDepth3_cpu, 
-            gTTDepth4_cpu, 
-            gTTDepth5_cpu, 
-            gTTDepth6_cpu, 
-            gTTDepth7_cpu, 
-            gTTDepth8_cpu, 
-            gTTDepth9_cpu);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
 #else
         perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
 #endif
@@ -204,11 +199,10 @@ int main(int argc, char *argv[])
         fprintf(fpOp, "%s %llu\n", line, res);
         fflush(fpOp);
 
-        QueryPerformanceCounter(&count2);
-        time.QuadPart = (count2.QuadPart - count1.QuadPart);    
-        double t = ((double) time.QuadPart) / freq.QuadPart;
+        end = clock();
+        double t = ((double) end - start) / 1000000;
         printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / i);
-
+        fflush(stdout);
         i++;
         if (i >= recordsToProcess)
             break;
@@ -350,23 +344,12 @@ int main(int argc, char *argv[])
 
         cudaMemset(gpu_perft, 0, sizeof(uint64));
 
-        //cudaMemset(gTranspositionTable_cpu, 0, TT_SIZE * sizeof(TT_Entry));
-
         // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
 
         EventTimer gputime;
         gputime.start();
 #if USE_TRANSPOSITION_TABLE == 1
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, 
-            gTranspositionTable_cpu, 
-            gTTDepth2_cpu,
-            gTTDepth3_cpu, 
-            gTTDepth4_cpu, 
-            gTTDepth5_cpu, 
-            gTTDepth6_cpu, 
-            gTTDepth7_cpu, 
-            gTTDepth8_cpu, 
-            gTTDepth9_cpu);
+        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
 #else
         perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
 #endif

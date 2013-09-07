@@ -195,33 +195,9 @@ extern uint64   *ShallowTT;
 // gpu version of the above data structures
 // accessed for read only using __ldg() function
 
-// transposition tables and zobrist keys
+// zobrist keys for hashing
 __device__ ZobristRandoms   gZob;                   // zobrist keys
 
-// shallow and deep transposition tables (used for both read and write using regular load/stores)
-#if USE_TRANSPOSITION_TABLE == 1
-
-__device__ TT_Entry         *gTranspositionTable;   // for other depths (or for depths that are not launched in parallel)
-__device__ uint64           *gTTDepth2;             // for depth 2
-__device__ uint64           *gTTDepth3;             // for depth 3
-
-// these are only used when USE_SEPERATE_TT_FOR_EACH_LEVEL is set
-__device__ uint64           *gTTDepth4;             // for depth 4
-__device__ HashEntryPerft   *gTTMid[20];            // transposition tables for other depths that are launched in parallel
-
-// cpu pointers of the above pointers (used by cudaMalloc and cudaFree)
-TT_Entry         *gTranspositionTable_cpu;
-uint64           *gTTDepth2_cpu;
-uint64           *gTTDepth3_cpu;
-uint64           *gTTDepth4_cpu;
-
-HashEntryPerft   *gTTDepth5_cpu;
-HashEntryPerft   *gTTDepth6_cpu;
-HashEntryPerft   *gTTDepth7_cpu;
-HashEntryPerft   *gTTDepth8_cpu;
-HashEntryPerft   *gTTDepth9_cpu;
-
-#endif
 
 // bit mask containing squares between two given squares
 __device__ static uint64 gBetween[64][64];
@@ -991,111 +967,10 @@ public:
 #endif
     }
 
-#ifndef SKIP_CUDA_CODE
-    static void hugeMemset(void *data, uint64 size)
-    {
-		uint8 *mem = (uint8*) data;
-		const uint64 c4G = 4ull * 1024 * 1024 * 1024;
-
-        while (size > c4G)
-        {
-            cudaMemset(mem, 0, c4G);
-			
-			mem  += c4G;
-			size -= c4G;
-        }
-        
-		cudaMemset(mem, 0, size);
-    }
-#endif
-
     static void init()
     {
         // initialize zobrist keys
         memcpy(&zob, randoms, sizeof(zob));
-
-        // allocate GPU tansposition tables and initialize gpu copy of zobrist keys
-#ifndef SKIP_CUDA_CODE
-        // allocate the transposition table
-#if USE_TRANSPOSITION_TABLE == 1
-        memcpy(&zob, randoms, sizeof(zob));
-
-        cudaError_t res = cudaMalloc(&gTranspositionTable_cpu, TT_SIZE * sizeof(TT_Entry));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", TT_SIZE * sizeof(TT_Entry), cudaGetErrorString(res));
-        }
-
-		hugeMemset(gTranspositionTable_cpu, TT_SIZE * sizeof(TT_Entry));
-
-        // first shallow TT (for storing depth 3 positions)
-        res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT3_SIZE * sizeof(uint64), cudaGetErrorString(res));
-        }
-        hugeMemset(gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
-
-        // second shallow transposition table (for storing depth 2 positions)
-        res = cudaMalloc(&gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate GPU depth2 transposition table of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
-        }
-        hugeMemset(gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
-
-		// third shallow transposition table (for storing depth 4 positions)
-        res = cudaMalloc(&gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate GPU depth4 transposition table of %d bytes, with error: %s\n", SHALLOW_TT4_SIZE * sizeof(uint64), cudaGetErrorString(res));
-        }
-        hugeMemset(gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
-		
-
-#if USE_SEPERATE_TT_FOR_EACH_LEVEL == 1
-        // additional transposition tables
-
-        // mid level transposition tables (deptth 5-9)
-        res = cudaMalloc(&gTTDepth5_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth5 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth5_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
-
-        res = cudaMalloc(&gTTDepth6_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth6 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth6_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
-
-        res = cudaMalloc(&gTTDepth7_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth7 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth7_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
-
-        res = cudaMalloc(&gTTDepth8_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth8 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth8_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
-
-        res = cudaMalloc(&gTTDepth9_cpu, MID_TT_SIZE * sizeof(HashEntryPerft));
-        if (res != S_OK)
-        {
-            printf("\nFailed to allocate depth9 TT of %d bytes, with error: %s\n", MID_TT_SIZE * sizeof(HashEntryPerft), cudaGetErrorString(res));
-        }
-        cudaMemset(gTTDepth9_cpu, 0, MID_TT_SIZE * sizeof(HashEntryPerft));
-#endif
-
-#endif 
-       
-#endif
 
         // initialize the empty board attack tables
         for (uint8 i=0; i < 64; i++)
