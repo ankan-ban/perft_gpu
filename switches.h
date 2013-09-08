@@ -64,24 +64,25 @@
 
 #if USE_TRANSPOSITION_TABLE == 1
 
-// store two positions (most recent and deepest) in every entry of hash table
-// default is to store deepest only
-#define USE_DUAL_SLOT_TT 0
-
 // use system memory hash table (only useful in 64 bit builds otherwise we run of VA space)
 #define USE_SYSMEM_HASH 0
 
-// size of transposition table (in number of entries)
-// must be a power of two
+// A bit risky: use a separate shallow hash table (64-bit entries) for holding depth 5 perfts
+// average branching factor of < 55 should be ok using 29 index bits
+#define USE_SHALLOW_DEPTH5_TT 0
+
+// size of the Deep transposition table (in number of entries)
+// maynot be a power of two
 // each entry is of 16 bytes
-// 27 bits: 128 million entries -> 4 GB hash table (when dual entry is used), or 2 GB when single entry is used
-// 24 Bits: 512 MB (when dual entry is used)
-// 25 bits: 1 GB (when dual entry is used)
-#define TT_BITS     25
-#define TT_SIZE     (1 << TT_BITS)
+// 28 bits: 256 million entries -> 4 GB
+// 27 bits: 128 million entries -> 2 GB
+// 25 bits: 32 million entries  -> 512 MB
+#define TT_BITS             25
+#define TT_SIZE_FROM_BITS   (1ull << TT_BITS)
+#define TT_SIZE             (32 * 1024 * 1024)
 
 // bits of the zobrist hash used as index into the transposition table
-#define TT_INDEX_BITS  (TT_SIZE - 1)
+#define TT_INDEX_BITS  (TT_SIZE_FROM_BITS - 1)
 
 // remaining bits (that are stored per hash entry)
 #define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
@@ -92,7 +93,7 @@
 // 27 bits: 1 GB
 // 29 bits: 4 GB
 #define SHALLOW_TT2_BITS         25
-#define SHALLOW_TT2_SIZE         (1 << SHALLOW_TT2_BITS)
+#define SHALLOW_TT2_SIZE         (1ull << SHALLOW_TT2_BITS)
 #define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
 #define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
 
@@ -104,28 +105,34 @@
 // 28 bits: 2 GB
 // 29 bits: 4 GB
 // 30 bits: 8 GB
-#define SHALLOW_TT3_BITS         25
-#define SHALLOW_TT3_SIZE         (1 << SHALLOW_TT3_BITS)
+#define SHALLOW_TT3_BITS         26
+#define SHALLOW_TT3_SIZE         (1ull << SHALLOW_TT3_BITS)
 #define SHALLOW_TT3_INDEX_BITS   (SHALLOW_TT3_SIZE - 1)
 #define SHALLOW_TT3_HASH_BITS    (ALLSET ^ SHALLOW_TT3_INDEX_BITS)
 
 // Transposition table for depth 4
 // 28 bits: 2 GB
 // 29 bits: 4 GB
-#define SHALLOW_TT4_BITS         26
-#define SHALLOW_TT4_SIZE         (1 << SHALLOW_TT4_BITS)
+#define SHALLOW_TT4_BITS         25
+#define SHALLOW_TT4_SIZE         (1ull << SHALLOW_TT4_BITS)
 #define SHALLOW_TT4_INDEX_BITS   (SHALLOW_TT4_SIZE - 1)
 #define SHALLOW_TT4_HASH_BITS    (ALLSET ^ SHALLOW_TT4_INDEX_BITS)
 
 
+#if USE_SHALLOW_DEPTH5_TT == 1
+// Transposition table for depth 4
+// 28 bits: 2 GB
+// 29 bits: 4 GB
+#define SHALLOW_TT5_BITS         24
+#define SHALLOW_TT5_SIZE         (1ull << SHALLOW_TT5_BITS)
+#define SHALLOW_TT5_INDEX_BITS   (SHALLOW_TT5_SIZE - 1)
+#define SHALLOW_TT5_HASH_BITS    (ALLSET ^ SHALLOW_TT5_INDEX_BITS)
+#endif
+
 // for the three shallow transposition tables above, the perft value is stored in index bits
 // as perft 2, perft 3 and perft 4 should always fit even in a 26 bit number
 
-#if USE_DUAL_SLOT_TT == 1
-#define TT_Entry DualHashEntry
-#else
 #define TT_Entry HashEntryPerft
-#endif
 
 #endif
 

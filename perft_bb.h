@@ -304,14 +304,19 @@ struct TTInfo
     uint64 *depth2;    // shallow transposition table for depth 2
     uint64 *depth3;    // .. for depth 3
     uint64 *depth4;    // .. for depth 4
+
+#if USE_SHALLOW_DEPTH5_TT == 1
     uint64 *depth5;    // .. for depth 5 -> could be risky to use
+#endif
 
-    // deep transposition tables (could be shared among multiple depths)
-    TT_Entry *deepTT[16]; // pointers to transposition table for every depth
-
+    // deep transposition table (shared among multiple depths)
+    TT_Entry *deepTT; 
+    
+    /*
     // mask of index and hash bits for each transposition table
     uint64 indexBits[16];
     uint64 hashBits [16];
+    */
 };
 
 __device__ TTInfo TTs;
@@ -1482,103 +1487,45 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
 #if USE_TRANSPOSITION_TABLE == 1
 
 // look up the transposition table for an entry
-__device__ __forceinline__ TT_Entry lookupTT(uint64 hash, TT_Entry *TT, uint64 indexBits)
+__device__ __forceinline__ TT_Entry lookupTT(uint64 hash)
 {
 #ifdef __CUDA_ARCH__
-        // stupid CUDA compiler can't see that I need 128 bit atomic reads/writes!
-#if USE_DUAL_SLOT_TT == 1
-        uint4 mostRecent = TT[hash & (indexBits)].mostRecent.rawVal;
-        uint4 deepest    = TT[hash & (indexBits)].deepest.rawVal;
-        TT_Entry entry;
-        entry.mostRecent.rawVal = mostRecent;
-        entry.deepest.rawVal = deepest;
-#else
-        uint4 val = TT[hash & (indexBits)].rawVal;
-        TT_Entry entry;
-        entry.rawVal = val;
-#endif
-        return entry;
-#else
-        return TT[hash & (indexBits)];
+    // stupid CUDA compiler can't see that I need 128 bit atomic reads/writes!
+    uint4 val = TTs.deepTT[hash % TT_SIZE].rawVal;
+    TT_Entry entry;
+    entry.rawVal = val;
+    return entry;
 #endif
 }
 
 // check if the given position is present in transposition table entry
-__device__ __forceinline__ bool searchTTEntry(TT_Entry &entry, uint64 hash, uint64 *perft, uint64 hashBits)
+__device__ __forceinline__ bool searchTTEntry(TT_Entry &entry, uint64 hash, uint64 *perft)
 {
-#if USE_DUAL_SLOT_TT == 1
-    if ((entry.mostRecent.hashKey & hashBits) == (hash & hashBits))
-    {
-        *perft = entry.mostRecent.perftVal;
-        return true;
-    }
-    if ((entry.deepest.hashKey & hashBits) == (hash & hashBits))
-    {
-        *perft = entry.deepest.perftVal;
-        return true;
-    }
-#else
-    if ((entry.hashKey & hashBits) == (hash & hashBits))
+    if ((entry.hashKey & TT_HASH_BITS) == (hash & TT_HASH_BITS))
     {
         *perft = entry.perftVal;
         return true;
     }
-#endif
-
     return false;
 }
 
-__device__ __forceinline__ void storeUpdatedTTEntry(TT_Entry &entry, uint64 hash, TT_Entry *TT, uint64 indexBits)
+__device__ __forceinline__ void storeUpdatedTTEntry(TT_Entry &entry, uint64 hash)
 {
 #ifdef __CUDA_ARCH__
-#if USE_DUAL_SLOT_TT == 1
-        TT[hash & (indexBits)].mostRecent.rawVal = entry.mostRecent.rawVal;
-        TT[hash & (indexBits)].deepest.rawVal    = entry.deepest.rawVal;
-#else
-        TT[hash & (indexBits)].rawVal = entry.rawVal;
+    TTs.deepTT[hash % TT_SIZE].rawVal = entry.rawVal;
 #endif
-#else
-        TT[hash & (indexBits)] = entry;
-#endif
-    
 }
 
-__device__ __forceinline__ void storeTTEntry(TT_Entry &entry, uint64 hash, int depth, uint64 count, TT_Entry *TT, uint64 indexBits)
+__device__ __forceinline__ void storeTTEntry(TT_Entry &entry, uint64 hash, int depth, uint64 count)
 {
-#if USE_DUAL_SLOT_TT == 1
-
-    // add this pos to deepest slot if this is deeper than deepest, or if the deepest is empty (depth=0)
-    if (entry.deepest.depth <= depth)
-    {
-        // avoid the entry to get overwritten if most recent slot is free (or is at lower depth)
-        if (entry.mostRecent.depth < entry.deepest.depth)
-        {
-            entry.mostRecent = entry.deepest;
-        }
-
-        entry.deepest.perftVal = count;
-        entry.deepest.hashKey = hash;
-        entry.deepest.depth = depth;
-        storeUpdatedTTEntry(entry, hash, TT, indexBits);
-    }
-    else
-    {
-        // otherwise add it to mostRecent slot
-        entry.mostRecent.perftVal = count;
-        entry.mostRecent.hashKey = hash;
-        entry.mostRecent.depth = depth;
-        storeUpdatedTTEntry(entry, hash, TT, indexBits);
-    }
-#else
     // only replace hash table entry if previously stored entry is at shallower depth
     if (entry.depth <= depth)
     {
         entry.perftVal = count;
         entry.hashKey = hash;
         entry.depth = depth;
-        storeUpdatedTTEntry(entry, hash, TT, indexBits);
+        storeUpdatedTTEntry(entry, hash);
     }
-#endif
 }
 #endif
 
@@ -2247,20 +2194,43 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
         atomicAdd(&numProbes[depth], 1);
 #endif
 
-        lookupHash = hash ^ (ZOB_KEY(depth) * depth);
-        entry = lookupTT(lookupHash, TTs.deepTT[depth], TTs.indexBits[depth]);
-        if (searchTTEntry(entry, lookupHash, &perftVal, TTs.hashBits[depth]))
+#if USE_SHALLOW_DEPTH5_TT == 1
+        if (depth == 5)
         {
-            // hash hit: no need to process this position further
-#if PRINT_HASH_STATS == 1
-            atomicAdd(&numHits[depth], 1);
-#endif
-            // TODO: might want to do a warp wide reduction before atomic add
-            atomicAdd(perftCounter, perftVal);
+            uint64 entry = TTs.depth5[hash & SHALLOW_TT5_INDEX_BITS];
+            if ((entry & SHALLOW_TT5_HASH_BITS) == (hash & SHALLOW_TT5_HASH_BITS))
+            {
+                //printf("\nh! entry: %016llX, hash: %016llX\n", entry, hash);
+                perftVal = entry & SHALLOW_TT5_INDEX_BITS;
+    #if PRINT_HASH_STATS == 1
+                atomicAdd(&numHits[depth], 1);
+    #endif
+                // TODO: might want to do a warp wide reduction before atomic add
+                atomicAdd(perftCounter, perftVal);
+            }
+            else
+            {
+                nMoves = countMoves(&pos, color);
+            }
         }
         else
+#endif
         {
-            nMoves = countMoves(&pos, color);
+            lookupHash = hash ^ (ZOB_KEY(depth) * depth);
+            entry = lookupTT(lookupHash);
+            if (searchTTEntry(entry, lookupHash, &perftVal))
+            {
+                // hash hit: no need to process this position further
+#if PRINT_HASH_STATS == 1
+                atomicAdd(&numHits[depth], 1);
+#endif
+                // TODO: might want to do a warp wide reduction before atomic add
+                atomicAdd(perftCounter, perftVal);
+            }
+            else
+            {
+                nMoves = countMoves(&pos, color);
+            }
         }
     }
 
@@ -2381,8 +2351,18 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
         atomicAdd(&numStores[depth], 1);
 #endif
 
-        // store perft val in transposition table
-        storeTTEntry(entry, lookupHash, depth, perftVal, TTs.deepTT[depth], TTs.indexBits[depth]);
+#if USE_SHALLOW_DEPTH5_TT == 1
+        if (depth == 5)
+        {
+            TTs.depth5[hash & SHALLOW_TT5_INDEX_BITS] =  (hash       & SHALLOW_TT5_HASH_BITS)  |
+                                                         (perftVal   & SHALLOW_TT5_INDEX_BITS) ;
+        }
+        else
+#endif
+        {
+            // store perft val in transposition table
+            storeTTEntry(entry, lookupHash, depth, perftVal);
+        }
     }
 }
 
@@ -2446,8 +2426,8 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
 
         uint64 lookupHash = newHash ^ (ZOB_KEY(depth) * depth);
 
-        TT_Entry entry = lookupTT(lookupHash, TTs.deepTT[depth], TTs.indexBits[depth]);
-        if (searchTTEntry(entry, lookupHash, &perftVal, TTs.hashBits[depth]))
+        TT_Entry entry = lookupTT(lookupHash);
+        if (searchTTEntry(entry, lookupHash, &perftVal))
         {
 #if PRINT_HASH_STATS == 1
             atomicAdd(&numHits[depth], 1);
@@ -2469,7 +2449,7 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
 #if PRINT_HASH_STATS == 1
         atomicAdd(&numStores[depth], 1);
 #endif
-        storeTTEntry(entry, lookupHash, depth, perftVal, TTs.deepTT[depth], TTs.indexBits[depth]);
+        storeTTEntry(entry, lookupHash, depth, perftVal);
     }
 
     return perftVal;
@@ -2556,6 +2536,7 @@ static void hugeMemset(void *data, uint64 size)
 uint64           *gTTDepth2_cpu;
 uint64           *gTTDepth3_cpu;
 uint64           *gTTDepth4_cpu;
+uint64           *gTTDepth5_cpu;
 
 // (one or more) deep tables (shared across multiple levels). Either 128 bit (16 byte) or 32 byte entries
 TT_Entry         *gTranspositionTable_cpu;
@@ -2611,24 +2592,22 @@ void setupHashTables(TTInfo &TransTables)
     }
     hugeMemset(gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
 		
+#if USE_SHALLOW_DEPTH5_TT == 1
+	// fourth shallow transposition table (for storing depth 5 positions)
+    res = cudaMalloc(&gTTDepth5_cpu, SHALLOW_TT5_SIZE * sizeof(uint64));
+    if (res != S_OK)
+    {
+        printf("\nFailed to allocate GPU depth5 transposition table of %d bytes, with error: %s\n", SHALLOW_TT5_SIZE * sizeof(uint64), cudaGetErrorString(res));
+    }
+    hugeMemset(gTTDepth5_cpu, SHALLOW_TT5_SIZE * sizeof(uint64));
 
+    TransTables.depth5 = gTTDepth5_cpu;
+#endif
 
     // set pointers to the appriopriate hash tables for each depth
-    for (int i=0;i<16;i++)
-    {
-        TransTables.deepTT[i] = gTranspositionTable_cpu;
-        TransTables.indexBits[i] = TT_INDEX_BITS;
-        TransTables.hashBits[i] = TT_HASH_BITS;
-    }
-
+    TransTables.deepTT = gTranspositionTable_cpu;
     TransTables.depth2 = gTTDepth2_cpu;
     TransTables.depth3 = gTTDepth3_cpu;
     TransTables.depth4 = gTTDepth4_cpu;
-    TransTables.indexBits[2] = SHALLOW_TT2_INDEX_BITS;
-    TransTables.indexBits[3] = SHALLOW_TT3_INDEX_BITS;
-    TransTables.indexBits[4] = SHALLOW_TT4_INDEX_BITS;
-    TransTables.hashBits[2] = SHALLOW_TT2_HASH_BITS;
-    TransTables.hashBits[3] = SHALLOW_TT3_HASH_BITS;
-    TransTables.hashBits[4] = SHALLOW_TT4_HASH_BITS;
 }
 #endif
