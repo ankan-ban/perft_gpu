@@ -51,7 +51,7 @@
 // flag en-passent capture only when it's possible (in next move)
 // default is to flag en-passent on every double pawn push
 // This switch works only using using makeMove()
-// This helps A LOT when using transposition tables (> 50% improvementi n perft(12) time)!
+// This helps A LOT when using transposition tables (> 50% improvement in perft(12) time)!
 #define EXACT_EN_PASSENT_FLAGGING 1
 
 // combine multiple memory requests into single request to save on number of atomicAdds
