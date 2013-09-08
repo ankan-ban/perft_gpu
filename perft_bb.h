@@ -239,7 +239,7 @@ __device__ __forceinline__ uint32 generateBoards(HexaBitBoardPosition *pos, uint
 }
 
 
-__device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8 color, CMove *genMoves)
+__host__ __device__ __forceinline__ uint32 generateMoves(HexaBitBoardPosition *pos, uint8 color, CMove *genMoves)
 {
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (color == BLACK)

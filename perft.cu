@@ -46,8 +46,7 @@ double gTime;
 
 #define STOP_TIMER \
     end = clock(); \
-    gTime = (double)(end - start)/1000.0lf; \
-    }
+    gTime = (double)(end - start)/1000.0;}
 // for timing CPU code : end
 
 void initGPU(TTInfo &TTs)
@@ -123,11 +122,99 @@ __global__ void testKernel()
     printf("\nHello cuda world!\n");
 }
 
+
+TTInfo TransTables;
+
+// do perft 11 using a single GPU call
+// bigger perfts are divided on the CPU
+#define GPU_LAUNCH_DEPTH 8
+
+uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoardPosition *gpuBoard, uint64 *gpu_perft, void *serial_perft_stack, int launchDepth, char *dispPrefix)
+{
+    HexaBitBoardPosition newPositions[MAX_MOVES];
+    CMove genMoves[MAX_MOVES];
+    char  dispString[128];
+
+    uint32 nMoves = 0;
+
+    if (depth <= GPU_LAUNCH_DEPTH)
+    {
+        // launch GPU perft routine
+        uint64 res;
+        {
+            EventTimer gputime;
+            gputime.start();
+
+            cudaMemcpy(gpuBoard, pos, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
+            cudaMemset(gpu_perft, 0, sizeof(uint64));
+            // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
+            #if USE_TRANSPOSITION_TABLE == 1
+                perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
+            #else
+                perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
+            #endif
+
+            cudaError_t err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
+            gputime.stop();
+            if (err != S_OK) printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
+            //printf("\nGPU Perft %d: %llu,   ", depth, res);
+            //fflush(stdout);
+            //printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
+        }
+
+        return res;
+    }
+
+    nMoves = generateBoards(pos, newPositions);
+
+    // generate moves also so that we can print them
+    generateMoves (pos, pos->chance, genMoves);
+
+    uint64 count = 0;
+
+    for (uint32 i=0; i < nMoves; i++)
+    {
+        char moveString[10];
+        Utils::getCompactMoveString(genMoves[i], moveString);
+        strcpy(dispString, dispPrefix);
+        strcat(dispString, moveString);
+        uint64 childPerft = perft_bb_cpu_launcher(&newPositions[i], depth - 1, gpuBoard, gpu_perft, serial_perft_stack, launchDepth, dispString);
+        printf("%s   %20llu\n", dispString, childPerft);
+        fflush(stdout);
+        count += childPerft;
+    }
+    return count;
+}
+
+
+// called only for bigger perfts - shows move count distribution for each move
+void dividedPerft(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
+{
+    HexaBitBoardPosition *gpuBoard;
+    uint64 *gpu_perft;
+    void *serial_perft_stack;
+
+    cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
+    cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
+    cudaMalloc(&gpu_perft, sizeof(uint64));
+
+    printf("\n");
+    uint64 perft;
+    START_TIMER
+    perft = perft_bb_cpu_launcher(pos, depth, gpuBoard, gpu_perft, serial_perft_stack, launchDepth, "..");
+    STOP_TIMER
+
+    printf("Perft(%02d):%20llu, time: %8g s\n", depth, perft, gTime);
+    fflush(stdout);
+    cudaFree(gpuBoard);
+    cudaFree(gpu_perft);
+    cudaFree(serial_perft_stack);    
+}
+
 int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
 
-    TTInfo TransTables;
     initGPU(TransTables);
 
     MoveGeneratorBitboard::init();
@@ -322,54 +409,7 @@ int main(int argc, char *argv[])
 
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
-        /*
-        START_TIMER
-        bbMoves = perft_bb(&testBB, depth);
-        STOP_TIMER
-        printf("\nPerft %d: %llu,   ", depth, bbMoves);
-        printf("Time taken: %g seconds, nps: %llu\n", gTime/1000.0, (uint64) ((bbMoves/gTime)*1000.0));
-        */
-        
-        // try the same thing on GPU
-        HexaBitBoardPosition *gpuBoard;
-        uint64 *gpu_perft;
-        void *serial_perft_stack;
-
-        cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-        cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
-        cudaMalloc(&gpu_perft, sizeof(uint64));
-        cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
-        if (err != S_OK)
-            printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
-
-        cudaMemset(gpu_perft, 0, sizeof(uint64));
-
-        // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
-
-        EventTimer gputime;
-        gputime.start();
-#if USE_TRANSPOSITION_TABLE == 1
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
-#else
-        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
-#endif
-        gputime.stop();
-        if (cudaGetLastError() < 0)
-            printf("host side launch returned: %s\n", cudaGetErrorString(cudaGetLastError()));
-
-        //cudaDeviceSynchronize();
-
-        uint64 res;
-        err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
-        if (err != S_OK)
-            printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
-
-        printf("\nGPU Perft %d: %llu,   ", depth, res);
-        printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
-	fflush(stdout);
-        cudaFree(gpuBoard);
-        cudaFree(gpu_perft);
-        cudaFree(serial_perft_stack);
+        dividedPerft(&testBB, depth, launchDepth);
     }
 
 #if USE_PREALLOCATED_MEMORY == 1

@@ -481,7 +481,37 @@ public:
 
 	    char sep = move.capturedPiece ? '*' : '-';
 
-	    printf("%c%d%c%c%d \n", 
+	    printf("%c%d%c%c%d ", 
+                c1+'a', 
+                r1, 
+			    sep,
+                c2+'a', 
+                r2);
+
+    }
+
+
+    static void getCompactMoveString(CMove move, char *str)
+    {
+        Move move2;
+        move2.capturedPiece = (move.getFlags() & CM_FLAG_CAPTURE);
+        move2.src = move.getFrom();
+        move2.dst = move.getTo();
+        getMoveBBString(move2, str);
+    }
+
+    static void getMoveBBString(Move move, char *str) 
+    {
+        uint8 r1, c1, r2, c2;
+        r1 = (move.src >> 3)+1;
+        c1 = (move.src) & 0x7;
+
+        r2 = (move.dst >> 3)+1;
+	    c2 = (move.dst) & 0x7;
+
+	    char sep = move.capturedPiece ? '*' : '-';
+
+	    sprintf(str, "%c%d%c%c%d ", 
                 c1+'a', 
                 r1, 
 			    sep,
