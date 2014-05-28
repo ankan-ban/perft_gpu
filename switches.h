@@ -21,7 +21,7 @@
 
 // Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
-#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
+#define PREALLOCATED_MEMORY_SIZE (2 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -29,7 +29,8 @@
 // use constant memory for accessing lookup tables (except for magic tables as they are huge)
 // the default is to use texture cache via __ldg instruction
 // (doesn't really affect performance either way. Maybe just a tiny bit slower with fancy magics)
-#define USE_CONSTANT_MEMORY_FOR_LUT 0
+// Ankan - improves performance on Maxwell a LOT!
+#define USE_CONSTANT_MEMORY_FOR_LUT 1
 
 // use parallel scan and interval expand algorithms (from modern gpu lib) for 
 // performing the move list scan and 'expand' operation to set correct board pointers for second level child moves
@@ -55,12 +56,12 @@
 #define EXACT_EN_PASSENT_FLAGGING 1
 
 // combine multiple memory requests into single request to save on number of atomicAdds
-    // doesn't seem to help at all!
+// doesn't seem to help at all!
 #define COMBINE_DEVICE_MALLOCS 0
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
 // it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
-#define USE_TRANSPOSITION_TABLE 1
+#define USE_TRANSPOSITION_TABLE 0
 
 #if USE_TRANSPOSITION_TABLE == 1
 
@@ -146,7 +147,8 @@
 #define USE_TEMPLATE_CHANCE_OPT 1
 
 // bitwise magic instead of if/else for castle flag updation
-#define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 1
+// turning this off helps Maxwell a little
+#define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 0
 
 // intel core 2 doesn't have popcnt instruction
 #define USE_POPCNT 0
@@ -165,13 +167,15 @@
 
 // use lookup table (magics) for sliding moves
 // reduces performance by ~7% for GPU version
+// helps maxwell a lot (> +10%)
 #define USE_SLIDING_LUT 1
 
 // use fancy fixed-shift version - ~ 800 KB lookup tables
 // (setting this to 0 enables plain magics - with 2.3 MB lookup table)
 // plain magics is a bit faster at least for perft (on core 2 duo)
 // fancy magics is clearly faster on more recent processors (ivy bridge)
-#define USE_FANCY_MAGICS 1
+// plain magics little bit faster for Maxwell
+#define USE_FANCY_MAGICS 0
 
 // use byte lookup for fancy magics (~150 KB lookup tables)
 // around 3% slower than fixed shift fancy magics on CPU

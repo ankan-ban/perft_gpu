@@ -127,7 +127,7 @@ TTInfo TransTables;
 
 // do perft 11 using a single GPU call
 // bigger perfts are divided on the CPU
-#define GPU_LAUNCH_DEPTH 8
+#define GPU_LAUNCH_DEPTH 11
 
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoardPosition *gpuBoard, uint64 *gpu_perft, void *serial_perft_stack, int launchDepth, char *dispPrefix)
 {
@@ -156,10 +156,12 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
 
             cudaError_t err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
             gputime.stop();
+#if USE_TRANSPOSITION_TABLE == 0
             if (err != S_OK) printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
-            //printf("\nGPU Perft %d: %llu,   ", depth, res);
-            //fflush(stdout);
-            //printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
+            printf("\nGPU Perft %d: %llu,   ", depth, res);
+            fflush(stdout);
+            printf("Time taken: %g seconds, nps: %llu\n", gputime.elapsed()/1000.0, (uint64) (((double) res/gputime.elapsed())*1000.0));
+#endif
         }
 
         return res;
@@ -204,9 +206,11 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
     perft = perft_bb_cpu_launcher(pos, depth, gpuBoard, gpu_perft, serial_perft_stack, launchDepth, "..");
     STOP_TIMER
 
+#if USE_TRANSPOSITION_TABLE == 1
     printf("Perft(%02d):%20llu, time: %8g s\n", depth, perft, gTime);
     fflush(stdout);
-    cudaFree(gpuBoard);
+#endif
+	cudaFree(gpuBoard);
     cudaFree(gpu_perft);
     cudaFree(serial_perft_stack);    
 }
@@ -307,8 +311,8 @@ int main(int argc, char *argv[])
 
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
-    Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
-    //Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
+    //Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
+    Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
     //Utils::readFENString("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -", &testBoard); // position 3
     //Utils::readFENString("r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1", &testBoard); // position 4
     //Utils::readFENString("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", &testBoard); // mirror of position 4
@@ -339,6 +343,10 @@ int main(int argc, char *argv[])
     if (strlen(fen) > 5)
     {
         Utils::readFENString(fen, &testBoard);
+    }
+    else
+    {
+        Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
     }
     Utils::dispBoard(&testBoard);
 
@@ -407,10 +415,13 @@ int main(int argc, char *argv[])
     //minDepth = 5;
     //launchDepth = 3;
 
+    launchDepth = 6;    // ankan for testing
+    
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
         dividedPerft(&testBB, depth, launchDepth);
     }
+    
 
 #if USE_PREALLOCATED_MEMORY == 1
     cudaFree(preAllocatedBufferHost);

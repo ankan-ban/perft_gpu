@@ -102,7 +102,8 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 
 
 // can be tuned as per need
-#define BLOCK_SIZE 256
+// 192 works best for Maxwell
+#define BLOCK_SIZE 192
 
 // fixed
 #define WARP_SIZE 32
@@ -116,6 +117,11 @@ __device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
     // align up the size to nearest 16 bytes (as some structures might have assumed 16 byte alignment?)
     size = ALIGN_UP(size, MEM_ALIGNMENT);
     uint32 startOffset = atomicAdd(&preAllocatedMemoryUsed, size);
+
+    // TODO: the new approach doesn't need atomicAdds for memory allocation as it's allocated only from a single thread.
+    // the below code should work!, but it's not. Debug and find out why is it so.
+    //preAllocatedMemoryUsed += size;
+    //uint32 startOffset = preAllocatedMemoryUsed;
 
     /*
     if (startOffset >= PREALLOCATED_MEMORY_SIZE)
@@ -309,8 +315,10 @@ struct TTInfo
     uint64 *depth5;    // .. for depth 5 -> could be risky to use
 #endif
 
+#if USE_TRANSPOSITION_TABLE == 1
     // deep transposition table (shared among multiple depths)
     TT_Entry *deepTT; 
+#endif
     
     /*
     // mask of index and hash bits for each transposition table
@@ -442,6 +450,47 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
     }
     
 }
+
+// same as above function but works with indices
+#if LIMIT_REGISTER_USE == 1
+__launch_bounds__(BLOCK_SIZE, 4)
+#endif
+__global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *positions, int *indices, CMove *moves, uint64 *globalPerftCounter, int nThreads)
+{
+
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= nThreads)
+        return;
+
+    uint32 boardIndex = indices[index];
+    HexaBitBoardPosition pos = positions[boardIndex];
+    int color = pos.chance;
+
+    CMove move = moves[index];
+
+    makeMove(&pos, move, color);
+
+    // 2. count moves at this position
+    int nMoves = 0;
+    nMoves = countMoves(&pos, !color);
+
+    // 3. add the count to global counter
+
+    // on Kepler, atomics are so fast that one atomic instruction per leaf node is also fast enough (faster than full reduction)!
+    // warp-wide reduction seems a little bit faster
+    warpReduce(nMoves);
+
+    int laneId = threadIdx.x & 0x1f;
+
+    if (laneId == 0)
+    {
+        atomicAdd(globalPerftCounter, nMoves);
+    }
+
+}
+
 
 // this version gets seperate perft counter per thread
 // perftCounters[] is array of pointers to perft counters - where each thread should atomically add the computed perft
@@ -587,6 +636,40 @@ __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **pos
 
     moveCounts[index] = nMoves;
 }
+
+// this kernel does several things
+// 1. Figures out the parent board position using indices[] array to lookup in parentBoards[] array
+// 2. makes the move on parent board to produce current board. Writes it to outPositions[].
+// 3. Counts moves at current board position and writes it to moveCounts[].
+#if LIMIT_REGISTER_USE == 1
+__launch_bounds__(BLOCK_SIZE, 4)
+#endif
+__global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition *parentBoards, int *indices, CMove *moves,
+                                                      HexaBitBoardPosition *outPositions, int *moveCounts, int nThreads)
+{
+    // exctact one element of work
+    uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // count the no. of moves for each board and save it in moveCounts array
+    int nMoves = 0;
+
+    if (index < nThreads)
+    {
+        int parentIndex = indices[index];
+        HexaBitBoardPosition pos = parentBoards[parentIndex];
+        CMove move = moves[index];
+
+        //Utils::displayCompactMove(move);
+
+        uint8 color = pos.chance;
+        makeMove(&pos, move, color);
+        nMoves = countMoves(&pos, !color);
+
+        outPositions[index] = pos;
+        moveCounts[index] = nMoves;
+    }
+}
+
 
 // this kernel does several things
 // 1. Figures out the parent board position using indices[] array to lookup in parentBoards[] array
@@ -1401,6 +1484,127 @@ __global__ void perft_bb_gpu_safe(HexaBitBoardPosition **positions,  CMove *move
     }
 }
 
+
+
+// a simpler gpu perft routine
+// only a single depth of kernel call nesting
+// assumes that enough memory would be available
+__global__ void perft_bb_gpu_simple(HexaBitBoardPosition *pos, uint64 *globalPerftCounter, int depth, void *devMemory)
+{
+    //preAllocatedBuffer = devMemory;
+    //preAllocatedMemoryUsed = 0;
+
+    int                     prevLevelCount = 0;             // no of previous level boards
+    HexaBitBoardPosition   *prevLevelBoards = NULL;         // boards at previous level
+
+    int                     currentLevelCount = 0;          // no of positions at current level
+    int                     *moveListOffsets = NULL;         // offset into moveList
+    int                     *moveCounts = NULL;              // moveCounts of current level boards
+    HexaBitBoardPosition    *currentLevelBoards = NULL;      // boards at current level
+
+    int                     nextLevelCount = 0;             // sum of moveCounts
+    CMove                  *childMoves;                     // moves generated by current level boards
+
+
+    // special case for first level (root)
+    uint8 color = pos->chance;
+    nextLevelCount = countMoves(pos, color);
+
+    if (nextLevelCount == 0)
+    {
+        return;
+    }
+
+    deviceMalloc(&childMoves, nextLevelCount * sizeof (CMove));
+    generateMoves(pos, color, childMoves);
+
+    prevLevelCount = 1;
+    prevLevelBoards = pos;
+    currentLevelCount = nextLevelCount;
+
+    deviceMalloc(&moveListOffsets, currentLevelCount * sizeof(int));
+    for (int i = 0; i < currentLevelCount; i++)
+        moveListOffsets[i] = 0;
+
+
+    int nBlocks;
+
+    // cuda stream for launching child kernels
+    cudaStream_t childStream;
+    cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
+
+    //printf("\nBefore loop, currentLevelCount: %d\n", currentLevelCount);
+
+    for (int i = 1; i < depth - 1; i++)
+    {
+        // allocate memory for current level boards, and moveCounts
+        deviceMalloc(&currentLevelBoards, currentLevelCount * sizeof (HexaBitBoardPosition));
+
+        int size = sizeof(int)* currentLevelCount;
+        size = (int)size * 1.2f + 256;
+        // (add some scratch space needed by scan and intervalExpand functions)
+        deviceMalloc(&moveCounts, size);
+
+        // make moves to get current level boards and get next level counts
+        nBlocks = (currentLevelCount - 1) / BLOCK_SIZE + 1;
+
+        makemove_and_count_moves_single_level << <nBlocks, BLOCK_SIZE, 0, childStream >> >
+            (prevLevelBoards, moveListOffsets, childMoves,
+            currentLevelBoards, moveCounts, currentLevelCount);
+
+        // do a scan to get new moveListOffsets
+        int *pNumSecondLevelMoves = moveCounts + currentLevelCount;     // global memory to hold the sum
+        int *scratchSpace = pNumSecondLevelMoves + 1;
+
+        mgpu::ScanD<mgpu::MgpuScanTypeExc>
+            (moveCounts, currentLevelCount, moveCounts, mgpu::ScanOp<mgpu::ScanOpTypeAdd, int>(),
+            pNumSecondLevelMoves, false, childStream, scratchSpace);
+
+        cudaDeviceSynchronize();
+
+        // the scan also gives the total of moveCounts
+        nextLevelCount = *pNumSecondLevelMoves;
+
+        if (nextLevelCount == 0)
+        {
+            // unlikely, but possible
+            return;
+        }
+
+        // Allocate memory for:
+        // next level child moves (i.e, moves at child boards of current board positions)
+        deviceMalloc(&childMoves, sizeof(CMove)* nextLevelCount);
+
+        // and  indices to current level boards
+        deviceMalloc(&moveListOffsets, sizeof(int)* nextLevelCount);
+
+        // Generate secondToFirstLevelIndices by running interval expand
+        // 
+        // Expand currentLevelMoves items -> nextLevelCount items
+        // The function takes a integer base number, takes an integer multiplier and performs integer addition to populate the output
+        // moveCounts now have the exclusive scan - containing the indices to put moves on
+
+        mgpu::IntervalExpandDGenValues(nextLevelCount, moveCounts, (int) 0, 1, currentLevelCount, moveListOffsets, childStream, scratchSpace);
+
+        // Generate next level child moves
+        // moveCounts[] (containing exclusive scan) is used by the below kernel to index into childMoves[] - to know where to put the generated moves
+        generate_moves_single_level << <nBlocks, BLOCK_SIZE, 0, childStream >> > (currentLevelBoards, childMoves, moveCounts, currentLevelCount);
+
+        // go to next level
+        prevLevelCount = currentLevelCount;
+        currentLevelCount = nextLevelCount;
+        prevLevelBoards = currentLevelBoards;
+
+    }
+
+    // special case for last level
+    nBlocks = (currentLevelCount - 1) / BLOCK_SIZE + 1;
+    makeMove_and_perft_single_level_indices << <nBlocks, BLOCK_SIZE, 0, childStream >> >
+        (prevLevelBoards, moveListOffsets, childMoves, globalPerftCounter, currentLevelCount);
+
+    cudaStreamDestroy(childStream);
+}
+
 // traverse the tree recursively (and serially) and launch parallel work on reaching launchDepth
 // if move is NULL, the function is supposed to return perft of the current position (pos)
 // otherwise, it will first make the move and then return perft of the resulting position
@@ -1423,11 +1627,16 @@ __device__ void perft_bb_gpu_recursive_launcher(HexaBitBoardPosition **posPtr, C
     }
     else if (depth <= launchDepth)
     {
-        perft_bb_gpu_safe<<<1, BLOCK_SIZE, sizeof(sharedMemAllocs), 0>>> (posPtr, move, globalPerftCounter, depth, 1);
+        //perft_bb_gpu_safe<<<1, BLOCK_SIZE, sizeof(sharedMemAllocs), 0>>> (posPtr, move, globalPerftCounter, depth, 1);
+        if (move != NULL)
+        {
+            makeMove(pos, move[0], color);
+        }
+        perft_bb_gpu_simple << <1, 1, 0, 0 >> > (pos, globalPerftCounter, depth, preAllocatedBuffer);
         cudaDeviceSynchronize();
 
         // 'free' up the memory used by the launch
-        //    printf("\nmemory used by previous parallel launch: %d bytes\n", preAllocatedMemoryUsed);
+        // printf("\nmemory used by previous parallel launch: %d bytes\n", preAllocatedMemoryUsed);
         preAllocatedMemoryUsed = 0;
     }
     else
@@ -1477,8 +1686,6 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
     printf("Total no. of times countMoves was called: %llu \n", numCountMoves);
 #endif
 }
-
-
 
 //--------------------------------------
 // transposition table helper functions
