@@ -102,8 +102,9 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 
 
 // can be tuned as per need
-// 192 works best for Maxwell
-#define BLOCK_SIZE 192
+// 256 works best for Maxwell
+// (also make sure max registers used is set to 47)
+#define BLOCK_SIZE 256
 
 // fixed
 #define WARP_SIZE 32

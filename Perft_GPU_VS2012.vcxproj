@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <CUDAPropsPath Condition="'$(CUDAPropsPath)'==''">$(VCTargetsPath)\BuildCustomizations</CUDAPropsPath>
   </PropertyGroup>
@@ -32,31 +32,31 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
-    <Import Project="$(CUDAPropsPath)\CUDA 5.5.props" />
+    <Import Project="$(CUDAPropsPath)\CUDA 7.0.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -95,7 +95,7 @@
     <LinkIncremental>false</LinkIncremental>
     <OutDir>.</OutDir>
     <IntDir>$(Platform)_$(Configuration)/</IntDir>
-    <IncludePath>$(DXSDK_DIR)\include;$(IncludePath)</IncludePath>
+    <IncludePath>$(DXSDK_DIR)\include;E:\CUDA\toolkit\lib\Win32;$(IncludePath)</IncludePath>
     <TargetName>perft_gpu_32bit</TargetName>
     <CodeAnalysisRuleSet>AllRules.ruleset</CodeAnalysisRuleSet>
     <CodeAnalysisRules />
@@ -190,7 +190,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <OutputFile>$(OutDir)perft_gpu_32bit.exe</OutputFile>
       <AdditionalLibraryDirectories>$(CudaToolkitLibDir);../../common/lib/$(PlatformName);</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;cudadevrt.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cuda.lib;cudart_static.lib;cudadevrt.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ProgramDatabaseFile>$(OutDir)cdpSimplePrint.pdb</ProgramDatabaseFile>
     </Link>
     <CudaCompile>
@@ -250,6 +250,10 @@
     <CudaCompile Include="perft.cu">
       <Defines Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">WIN32;_HAS_ITERATOR_DEBUGGING=0</Defines>
       <Defines Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">WIN32;_HAS_ITERATOR_DEBUGGING=0</Defines>
+      <CodeGeneration Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">compute_35,sm_35</CodeGeneration>
+      <GenerateRelocatableDeviceCode Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</GenerateRelocatableDeviceCode>
+      <CudaRuntime Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Shared</CudaRuntime>
+      <MaxRegCount Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">47</MaxRegCount>
     </CudaCompile>
   </ItemGroup>
   <ItemGroup>
@@ -271,6 +275,6 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="$(CUDAPropsPath)\CUDA 5.5.targets" />
+    <Import Project="$(CUDAPropsPath)\CUDA 7.0.targets" />
   </ImportGroup>
 </Project>

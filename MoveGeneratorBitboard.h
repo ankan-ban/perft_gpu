@@ -3250,7 +3250,7 @@ public:
     template<uint8 chance, bool updateHash>
     CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static void makeMove (HexaBitBoardPosition *pos, uint64 &hash, CMove move)
 #else
-    CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static void makeMove (HexaBitBoardPosition *pos, uint64 &hash, CMove move, uint64 &hash, uint8 chance)
+	CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static void makeMove(HexaBitBoardPosition *pos, uint64 &hash, CMove move, uint8 chance, bool updateHash)
 #endif
     {
         uint64 src = BIT(move.getFrom());

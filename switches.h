@@ -9,7 +9,7 @@
 
 // limit max used registers to 64 for some kernels
 // improves occupancy and performance (but doesn't work with debug info or debug builds)
-#define LIMIT_REGISTER_USE 1
+#define LIMIT_REGISTER_USE 0
 
 // don't call cudaMalloc/cudaFree from device code, 
 // suballocate from a pre-allocated buffer instead
@@ -144,6 +144,7 @@
 #define PRINT_HASH_STATS 0
 
 // move generation functions templated on chance
+// +9% benefit on GM204
 #define USE_TEMPLATE_CHANCE_OPT 1
 
 // bitwise magic instead of if/else for castle flag updation
@@ -174,8 +175,8 @@
 // (setting this to 0 enables plain magics - with 2.3 MB lookup table)
 // plain magics is a bit faster at least for perft (on core 2 duo)
 // fancy magics is clearly faster on more recent processors (ivy bridge)
-// plain magics little bit faster for Maxwell
-#define USE_FANCY_MAGICS 0
+// plain magics a very very tiny bit faster for Maxwell (actually almost exactly same speed)
+#define USE_FANCY_MAGICS 1
 
 // use byte lookup for fancy magics (~150 KB lookup tables)
 // around 3% slower than fixed shift fancy magics on CPU

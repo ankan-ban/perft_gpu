@@ -57,8 +57,8 @@
 namespace mgpu {
 
 #if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ < 100)
-using std::max;
-using std::min;
+//using std::max;
+//using std::min;
 #endif
 
 typedef unsigned char byte;
