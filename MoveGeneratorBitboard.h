@@ -838,6 +838,19 @@ public:
 #define multiRookAttacks   rookAttacksKoggeStone
 #endif
 
+CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static uint64 multiKnightAttacks(uint64 knights)
+{
+	uint64 attacks = 0;
+	while(knights)
+	{
+		uint64 knight = getOne(knights);
+		attacks |= sqKnightAttacks(bitScan(knight));
+		knights ^= knight;
+	}
+	return attacks;
+}
+
+
 // not used
 #if 0
     CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static uint64 queenAttacks(uint64 queens, uint64 pro)
@@ -1258,21 +1271,30 @@ public:
         }
 
         // 2. knight attacks
-        attacked |= knightAttacks(enemyKnights);
+		// using multi-attack LUT is significantly more expensive for GPU
+#if 0   // USE_KNIGHT_LUT == 1
+        attacked |= multiKnightAttacks(enemyKnights); // again a tiny bit faster
+#else
+        attacked |= knightAttacks(enemyKnights);	
+#endif
         
         // 3. bishop attacks
-        attacked |= multiBishopAttacks(enemyBishops, emptySquares | myKing); // squares behind king are also under threat (in the sense that king can't go there)
+		attacked |= multiBishopAttacks(enemyBishops, emptySquares | myKing); // squares behind king are also under threat (in the sense that king can't go there)
 
         // 4. rook attacks
-        attacked |= multiRookAttacks(enemyRooks, emptySquares | myKing); // squares behind king are also under threat
+		attacked |= multiRookAttacks(enemyRooks, emptySquares | myKing); // squares behind king are also under threat
 
         // 5. King attacks
+#if 0   // USE_KING_LUT == 1
+        attacked |= sqKingAttacks(bitScan(enemyKing));	// a very tiny bit faster!
+#else
         attacked |= kingAttacks(enemyKing);
+#endif
         
         // TODO: 
         // 1. figure out if we really need to mask off pieces on board
         //  - actually it seems better not to.. so that we can easily check if a capture move takes the king to check
-        // 2. It might be faster to use the lookup table instead of computing (esp for king and knights)
+        // 2. It might be faster to use the lookup table instead of computing (esp for king and knights).. DONE!
         return attacked/*& (emptySquares)*/;
     }
 

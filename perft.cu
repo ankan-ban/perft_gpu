@@ -229,17 +229,14 @@ int main(int argc, char *argv[])
     int startRecord      = 0;
     int recordsToProcess = 1000000;
     int i = 0;
-    if (argc !=5)
+    if (argc !=3)
     {
-        printf("usage: perft14_verif <inFile> <outFile> <startRecord> <recordsToProcess>\n");
+        printf("usage: perft14_verif <inFile> <outFile>\n");
         return 0;
     }
 
     fpInp = fopen(argv[1], "r+");
-    fpOp  = fopen(argv[2], "a+");
-    startRecord = atoi(argv[3]);
-    recordsToProcess = atoi(argv[4]);
-    printf("\nStart Record: %d, records to process: %d\n", startRecord, recordsToProcess);
+    fpOp  = fopen(argv[2], "w+");
 
     cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
     HexaBitBoardPosition *gpuBoard;
@@ -256,8 +253,6 @@ int main(int argc, char *argv[])
     int j=0;
     while(fgets(line,1024,fpInp))
     {
-        if (j++ < startRecord) continue;
-
         Utils::readFENString(line, &testBoard);
         HexaBitBoardPosition testBB;
 
@@ -266,8 +261,7 @@ int main(int argc, char *argv[])
 
         Utils::board088ToHexBB(&testBB, &testBoard);
         
-        uint32 launchDepth = 6; //estimateLaunchDepth(&testBB);
-        //launchDepth = min(launchDepth, 7); // don't go too high
+        uint32 launchDepth = 6;
 
         cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
         if (err != S_OK)
@@ -287,16 +281,21 @@ int main(int argc, char *argv[])
         printf("GPU Perft %d: %llu", 7, res);
         // write to output file
         removeNewLine(line);
-        fprintf(fpOp, "%s %llu\n", line, res);
+
+        // parse the occurence count (last number in the line)
+        char *ptr = line;
+        while (*ptr) ptr++;
+        while (*ptr != ' ') ptr--;
+        int occCount = atoi(ptr);
+
+        fprintf(fpOp, "%s %llu %llu\n", line, res, res * occCount);
         fflush(fpOp);
 
         end = clock();
-        double t = ((double) end - start) / 1000000;
+        double t = ((double)end - start) / CLOCKS_PER_SEC;
         printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / i);
         fflush(stdout);
         i++;
-        if (i >= recordsToProcess)
-            break;
     }
 
 
@@ -391,7 +390,7 @@ int main(int argc, char *argv[])
     printf("Calculated syncDepth was: %d\n", syncDepth);
     //syncDepth = 9;
 
-    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
+    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
     while (hr != S_OK)
     {
         printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth to depth %d failed. Error: %s ... trying with lower sync depth\n", syncDepth, cudaGetErrorString(hr));
@@ -412,7 +411,8 @@ int main(int argc, char *argv[])
 
    
     // for testing
-    //minDepth = 5;
+    //minDepth = 6;
+    //maxDepth = 7;
     //launchDepth = 3;
 
     launchDepth = 6;    // ankan for testing

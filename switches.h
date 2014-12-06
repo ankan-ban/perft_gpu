@@ -21,7 +21,8 @@
 
 // Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
-#define PREALLOCATED_MEMORY_SIZE (2 * 768 * 1024 * 1024)
+// use 1536 MB when not using hash tables (so that we can fit wider levels in a single launch)
+#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -61,15 +62,23 @@
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
 // it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
-#define USE_TRANSPOSITION_TABLE 0
+#define USE_TRANSPOSITION_TABLE 1
 
 #if USE_TRANSPOSITION_TABLE == 1
 
-// use system memory hash table (only useful in 64 bit builds otherwise we run of VA space)
-#define USE_SYSMEM_HASH 0
+// windows 64 bit vs 32 bit vs linux 64 bit compromise :-/
+// Windows allows overclocking (gives about 10% extra performance)
+// Windows 32 bit build is 7% faster than windows 64 bit build (for some unknown reason??)!
+// .. but 32 bit windows build is address space limited.. best settings: don't use sysmem hash, TT_BITS: 25, TT2_BITS: 25, TT3_BITS: 26, TT4_BITS: 25 (total 1.5 GB HASH)
+// .. 64 bit windows doesn't allow creating pow-2 vidmem allocations bigger than 1 GB, and sysmem allocations bigger than 2 GB. best settings: TT_BITS: 27, TT2/TT3 BITS: 26, TT4_BITS: 27 (total 4 GB HASH using 2 GB sysmem)
+// .. Linux allows using any amount of memory (limited by sysmem/vidmem sizes), so best setting is to distribute all of available vidmem and sysmem to cover all transposition tables adequately
+
+// use system memory hash table (only useful in 64 bit builds otherwise we run of VA space before running out of vid memory)
+#define USE_SYSMEM_HASH 1
 
 // A bit risky: use a separate shallow hash table (64-bit entries) for holding depth 5 perfts
 // average branching factor of < 55 should be ok using 29 index bits
+// ANKAN - this seems buggy, or are we running out of bits? - TODO: debug and fix.
 #define USE_SHALLOW_DEPTH5_TT 0
 
 // size of the Deep transposition table (in number of entries)
@@ -78,9 +87,9 @@
 // 28 bits: 256 million entries -> 4 GB
 // 27 bits: 128 million entries -> 2 GB
 // 25 bits: 32 million entries  -> 512 MB
-#define TT_BITS             25
+#define TT_BITS             27
 #define TT_SIZE_FROM_BITS   (1ull << TT_BITS)
-#define TT_SIZE             (32 * 1024 * 1024)
+#define TT_SIZE             (128 * 1024 * 1024)
 
 // bits of the zobrist hash used as index into the transposition table
 #define TT_INDEX_BITS  (TT_SIZE_FROM_BITS - 1)
@@ -93,7 +102,7 @@
 // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
 // 27 bits: 1 GB
 // 29 bits: 4 GB
-#define SHALLOW_TT2_BITS         25
+#define SHALLOW_TT2_BITS         26
 #define SHALLOW_TT2_SIZE         (1ull << SHALLOW_TT2_BITS)
 #define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
 #define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
@@ -114,14 +123,14 @@
 // Transposition table for depth 4
 // 28 bits: 2 GB
 // 29 bits: 4 GB
-#define SHALLOW_TT4_BITS         25
+#define SHALLOW_TT4_BITS         27
 #define SHALLOW_TT4_SIZE         (1ull << SHALLOW_TT4_BITS)
 #define SHALLOW_TT4_INDEX_BITS   (SHALLOW_TT4_SIZE - 1)
 #define SHALLOW_TT4_HASH_BITS    (ALLSET ^ SHALLOW_TT4_INDEX_BITS)
 
 
 #if USE_SHALLOW_DEPTH5_TT == 1
-// Transposition table for depth 4
+// Transposition table for depth 5
 // 28 bits: 2 GB
 // 29 bits: 4 GB
 #define SHALLOW_TT5_BITS         24
@@ -152,7 +161,7 @@
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 0
 
 // intel core 2 doesn't have popcnt instruction
-#define USE_POPCNT 0
+#define USE_POPCNT 1
 
 // pentium 4 doesn't have fast HW bitscan
 #define USE_HW_BITSCAN 1
@@ -175,7 +184,7 @@
 // (setting this to 0 enables plain magics - with 2.3 MB lookup table)
 // plain magics is a bit faster at least for perft (on core 2 duo)
 // fancy magics is clearly faster on more recent processors (ivy bridge)
-// plain magics a very very tiny bit faster for Maxwell (actually almost exactly same speed)
+// fancy magics a very very tiny bit faster for Maxwell (actually almost exactly same speed)
 #define USE_FANCY_MAGICS 1
 
 // use byte lookup for fancy magics (~150 KB lookup tables)

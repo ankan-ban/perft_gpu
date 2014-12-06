@@ -254,6 +254,9 @@
       <GenerateRelocatableDeviceCode Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</GenerateRelocatableDeviceCode>
       <CudaRuntime Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Shared</CudaRuntime>
       <MaxRegCount Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">47</MaxRegCount>
+      <MaxRegCount Condition="'$(Configuration)|$(Platform)'=='Release|x64'">47</MaxRegCount>
+      <FastMath Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</FastMath>
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">O2</Optimization>
     </CudaCompile>
   </ItemGroup>
   <ItemGroup>
