@@ -2729,7 +2729,7 @@ __global__ void perft_bb_gpu_main_hash(HexaBitBoardPosition **positions,  uint64
 // traverse the tree recursively (and serially) and launch parallel work on reaching launchDepth
 __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **posPtr, uint64 hash, CMove *move, 
                                                        uint64 *globalPerftCounter, int depth, CMove *movesStack, HexaBitBoardPosition *boardStack,
-                                                       HexaBitBoardPosition **boardPtrStack, int launchDepth)
+                                                       HexaBitBoardPosition **boardPtrStack, int launchDepth, int origDepth)
 {
     HexaBitBoardPosition *pos   = *posPtr;
     uint8 color                 = pos->chance;
@@ -2778,19 +2778,21 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
         }
         
         // look up the transposition table
-#if PRINT_HASH_STATS == 1
-        atomicAdd(&numProbes[depth], 1);
-#endif
-
         uint64 lookupHash = newHash ^ (ZOB_KEY(depth) * depth);
-
-        TT_Entry entry = lookupTT(lookupHash);
-        if (searchTTEntry(entry, lookupHash, &perftVal))
+        TT_Entry entry;
+        if (depth != origDepth)
         {
 #if PRINT_HASH_STATS == 1
-            atomicAdd(&numHits[depth], 1);
+            atomicAdd(&numProbes[depth], 1);
 #endif
-            return perftVal;
+            entry = lookupTT(lookupHash);
+            if (searchTTEntry(entry, lookupHash, &perftVal))
+            {
+#if PRINT_HASH_STATS == 1
+                atomicAdd(&numHits[depth], 1);
+#endif
+                return perftVal;
+            }
         }
 
         nMoves = generateMoves(pos, color, movesStack);
@@ -2800,14 +2802,18 @@ __device__ uint64 perft_bb_gpu_hash_recursive_launcher(HexaBitBoardPosition **po
             *boardStack = *pos;
 
             perftVal += perft_bb_gpu_hash_recursive_launcher(boardPtrStack, newHash, &movesStack[i], globalPerftCounter, depth-1, 
-                                                            &movesStack[MAX_MOVES],  boardStack + 1, boardPtrStack + 1, launchDepth);
+                                                            &movesStack[MAX_MOVES],  boardStack + 1, boardPtrStack + 1, launchDepth, origDepth);
         }
 
         // store perft val in transposition table
+        if (depth != origDepth)
+        {
+
 #if PRINT_HASH_STATS == 1
-        atomicAdd(&numStores[depth], 1);
+            atomicAdd(&numStores[depth], 1);
 #endif
-        storeTTEntry(entry, lookupHash, depth, perftVal);
+            storeTTEntry(entry, lookupHash, depth, perftVal);
+        }
     }
 
     return perftVal;
@@ -2852,7 +2858,7 @@ __global__ void perft_bb_driver_gpu_hash(HexaBitBoardPosition *pos, uint64 *glob
     numCountMoves = 0ull;
 #endif
     uint64 finalPerfVal = perft_bb_gpu_hash_recursive_launcher(boardPtrStack, hash, NULL, globalPerftCounter, depth, movesStack, boardStack, 
-                                                                boardPtrStack+1, launchDepth);
+                                                                boardPtrStack+1, launchDepth, depth);
 #if COUNT_NUM_COUNT_MOVES == 1
     printf("Total no. of times countMoves was called: %llu \n", numCountMoves);
 #endif

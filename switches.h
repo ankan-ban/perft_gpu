@@ -1,5 +1,8 @@
 // this file contains the various compile time settings/swithes
 
+// compile a binary to verify perft(14) using list of perft(7) records
+#define PERFT_VERIF_MODE 1
+
 #define DEBUG_PRINT_MOVES 0
 #if DEBUG_PRINT_MOVES == 1
     #define DEBUG_PRINT_DEPTH 6
@@ -22,7 +25,7 @@
 // Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
 // use 1536 MB when not using hash tables (so that we can fit wider levels in a single launch)
-#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
+#define PREALLOCATED_MEMORY_SIZE (2 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -73,8 +76,37 @@
 // .. 64 bit windows doesn't allow creating pow-2 vidmem allocations bigger than 1 GB, and sysmem allocations bigger than 2 GB. best settings: TT_BITS: 27, TT2/TT3 BITS: 26, TT4_BITS: 27 (total 4 GB HASH using 2 GB sysmem)
 // .. Linux allows using any amount of memory (limited by sysmem/vidmem sizes), so best setting is to distribute all of available vidmem and sysmem to cover all transposition tables adequately
 
-// use system memory hash table (only useful in 64 bit builds otherwise we run of VA space before running out of vid memory)
-#define USE_SYSMEM_HASH 1
+
+#ifdef _WIN64
+    // little bit more memory to hold bigger pointers
+    #define PREALLOCATED_MEMORY_SIZE (1024 * 1024 * 1024)
+
+    // use system memory hash table (only useful in 64 bit builds otherwise we run of VA space before running out of vid memory)
+    #define USE_SYSMEM_HASH 1
+
+    // 27 bits: 128 million entries  -> 2 GB
+    #define TT_BITS                  27
+    #define TT_SIZE                  (128 * 1024 * 1024)
+
+        // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
+    #define SHALLOW_TT2_BITS         26
+    #define SHALLOW_TT3_BITS         26
+    #define SHALLOW_TT4_BITS         27
+#else
+    #define PREALLOCATED_MEMORY_SIZE (768 * 1024 * 1024)
+
+    #define USE_SYSMEM_HASH 0
+
+    // 25 bits: 32 million entries  -> 512 MB
+    #define TT_BITS                  25
+    #define TT_SIZE                  (32 * 1024 * 1024)
+
+    // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
+    #define SHALLOW_TT2_BITS         25
+    #define SHALLOW_TT3_BITS         26
+    #define SHALLOW_TT4_BITS         25
+#endif
+
 
 // A bit risky: use a separate shallow hash table (64-bit entries) for holding depth 5 perfts
 // average branching factor of < 55 should be ok using 29 index bits
@@ -87,9 +119,7 @@
 // 28 bits: 256 million entries -> 4 GB
 // 27 bits: 128 million entries -> 2 GB
 // 25 bits: 32 million entries  -> 512 MB
-#define TT_BITS             27
 #define TT_SIZE_FROM_BITS   (1ull << TT_BITS)
-#define TT_SIZE             (128 * 1024 * 1024)
 
 // bits of the zobrist hash used as index into the transposition table
 #define TT_INDEX_BITS  (TT_SIZE_FROM_BITS - 1)
@@ -102,11 +132,9 @@
 // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
 // 27 bits: 1 GB
 // 29 bits: 4 GB
-#define SHALLOW_TT2_BITS         26
 #define SHALLOW_TT2_SIZE         (1ull << SHALLOW_TT2_BITS)
 #define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
 #define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
-
 
 
 // A transposition table for storing only depth 3 positions
@@ -115,7 +143,6 @@
 // 28 bits: 2 GB
 // 29 bits: 4 GB
 // 30 bits: 8 GB
-#define SHALLOW_TT3_BITS         26
 #define SHALLOW_TT3_SIZE         (1ull << SHALLOW_TT3_BITS)
 #define SHALLOW_TT3_INDEX_BITS   (SHALLOW_TT3_SIZE - 1)
 #define SHALLOW_TT3_HASH_BITS    (ALLSET ^ SHALLOW_TT3_INDEX_BITS)
@@ -123,7 +150,6 @@
 // Transposition table for depth 4
 // 28 bits: 2 GB
 // 29 bits: 4 GB
-#define SHALLOW_TT4_BITS         27
 #define SHALLOW_TT4_SIZE         (1ull << SHALLOW_TT4_BITS)
 #define SHALLOW_TT4_INDEX_BITS   (SHALLOW_TT4_SIZE - 1)
 #define SHALLOW_TT4_HASH_BITS    (ALLSET ^ SHALLOW_TT4_INDEX_BITS)

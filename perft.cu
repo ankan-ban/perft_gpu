@@ -1,10 +1,9 @@
 #include "perft_bb.h"
 #include <math.h>
 
-#define PERFT_VERIF_MODE 0
-
 #if PERFT_VERIF_MODE == 1
 #include <time.h>
+#include <conio.h>
 #endif
 
 class EventTimer {
@@ -125,9 +124,9 @@ __global__ void testKernel()
 
 TTInfo TransTables;
 
-// do perft 11 using a single GPU call
+// do perft 10 using a single GPU call
 // bigger perfts are divided on the CPU
-#define GPU_LAUNCH_DEPTH 11
+#define GPU_LAUNCH_DEPTH 10
 
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoardPosition *gpuBoard, uint64 *gpu_perft, void *serial_perft_stack, int launchDepth, char *dispPrefix)
 {
@@ -226,17 +225,22 @@ int main(int argc, char *argv[])
 #if PERFT_VERIF_MODE == 1
     FILE *fpInp;    // input file
     FILE *fpOp;     // output file
-    int startRecord      = 0;
-    int recordsToProcess = 1000000;
+
     int i = 0;
-    if (argc !=3)
+    if (argc !=2)
     {
-        printf("usage: perft14_verif <inFile> <outFile>\n");
+        printf("usage: perft14_verif <inFile>\n");
         return 0;
     }
 
-    fpInp = fopen(argv[1], "r+");
-    fpOp  = fopen(argv[2], "w+");
+    char opFile[1024];
+    sprintf(opFile, "%s.op", argv[1]);
+    printf("filename of op: %s", opFile);
+
+    fpInp = fopen(argv[1], "rb+");
+    fpOp  = fopen(opFile, "ab+");
+
+    fseek(fpOp, 0, SEEK_SET);
 
     cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
     HexaBitBoardPosition *gpuBoard;
@@ -253,6 +257,20 @@ int main(int argc, char *argv[])
     int j=0;
     while(fgets(line,1024,fpInp))
     {
+        if (_kbhit())
+        {
+            printf("\nPaused.. press any key to continue.\n");
+            getch();
+            getch();
+        }
+
+        i++;
+        if (fgets(opFile, 1024, fpOp))
+        {
+            // skip already processed records
+            continue;
+        }
+
         Utils::readFENString(line, &testBoard);
         HexaBitBoardPosition testBB;
 
@@ -293,9 +311,9 @@ int main(int argc, char *argv[])
 
         end = clock();
         double t = ((double)end - start) / CLOCKS_PER_SEC;
-        printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / i);
+        j++;
+        printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / j);
         fflush(stdout);
-        i++;
     }
 
 
