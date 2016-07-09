@@ -57,7 +57,7 @@
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
 // it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
-#define USE_TRANSPOSITION_TABLE 0
+#define USE_TRANSPOSITION_TABLE 1
 
 #if USE_TRANSPOSITION_TABLE == 1
 
@@ -67,22 +67,23 @@
 // .. but 32 bit windows build is address space limited.. best settings: don't use sysmem hash, TT_BITS: 25, TT2_BITS: 25, TT3_BITS: 26, TT4_BITS: 25 (total 1.5 GB HASH)
 // .. 64 bit windows doesn't allow creating pow-2 vidmem allocations bigger than 1 GB, and sysmem allocations bigger than 2 GB. best settings: TT_BITS: 27, TT2/TT3 BITS: 26, TT4_BITS: 27 (total 4 GB HASH using 2 GB sysmem)
 // .. Linux allows using any amount of memory (limited by sysmem/vidmem sizes), so best setting is to distribute all of available vidmem and sysmem to cover all transposition tables adequately
-
+// 9 JUL 2016: Looks like on Windows 10 and with latest drivers, there is no longer any limitation. 
+//  .. except for cudaHostAlloc() which doesn't seem to allow allocating > 6GB of memory on 16 GB system :-/
 
 #ifdef _WIN64
     // little bit more memory to hold bigger pointers
-    #define PREALLOCATED_MEMORY_SIZE (1024 * 1024 * 1024)
+    //#define PREALLOCATED_MEMORY_SIZE (1024 * 1024 * 1024)
 
     // use system memory hash table (only useful in 64 bit builds otherwise we run of VA space before running out of vid memory)
     #define USE_SYSMEM_HASH 1
 
     // 27 bits: 128 million entries  -> 2 GB
-    #define TT_BITS                  27
-    #define TT_SIZE                  (128 * 1024 * 1024)
+    #define TT_BITS                  28
+    #define TT_SIZE                  (256 * 1024 * 1024)
 
         // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
     #define SHALLOW_TT2_BITS         26
-    #define SHALLOW_TT3_BITS         26
+    #define SHALLOW_TT3_BITS         27
     #define SHALLOW_TT4_BITS         27
 #else
     #define PREALLOCATED_MEMORY_SIZE (768 * 1024 * 1024)
@@ -98,6 +99,11 @@
     #define SHALLOW_TT3_BITS         26
     #define SHALLOW_TT4_BITS         25
 #endif
+
+// use system memory hash even for shallow transposition tables: useful for systems with less video memory and more system memory
+#define USE_SYSMEM_HASH_FOR_SHALLOW_TT2 0
+#define USE_SYSMEM_HASH_FOR_SHALLOW_TT3 1
+#define USE_SYSMEM_HASH_FOR_SHALLOW_TT4 1
 
 
 // A bit risky: use a separate shallow hash table (64-bit entries) for holding depth 5 perfts

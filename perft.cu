@@ -301,17 +301,17 @@ int main(int argc, char *argv[])
     }
 
     // Ankan - for testing
-    // printf("Calculated syncDepth was: %d\n", syncDepth);
+    printf("Calculated syncDepth was: %d\n", syncDepth);
 
-    /*
-    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
+    
+    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     while (hr != cudaSuccess)
     {
         printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth to depth %d failed. Error: %s ... trying with lower sync depth\n", syncDepth, cudaGetErrorString(hr));
         syncDepth--;
         hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     }
-    */
+   
 
     // adjust the launchDepth again in case the cudaDeviceSetLimit call above failed...
     launchDepth = syncDepth + 1;

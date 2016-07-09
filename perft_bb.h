@@ -2917,28 +2917,70 @@ void setupHashTables(TTInfo &TransTables)
 #endif
 	hugeMemset(gTranspositionTable_cpu, TT_SIZE * sizeof(TT_Entry));
 
-    // first shallow TT (for storing depth 3 positions)
-    res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
+    // second shallow transposition table (for storing depth 2 positions)
+#if USE_SYSMEM_HASH_FOR_SHALLOW_TT2 == 1
+    // try allocating in system memory
+    res = cudaHostAlloc(&temp, SHALLOW_TT2_SIZE * sizeof(uint64), cudaHostAllocMapped | cudaHostAllocWriteCombined);
     if (res != S_OK)
     {
-        printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT3_SIZE * sizeof(uint64), cudaGetErrorString(res));
+        printf("\nFailed to allocate GPU depth2 transposition table of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
     }
-    hugeMemset(gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
-
-    // second shallow transposition table (for storing depth 2 positions)
+    res = cudaHostGetDevicePointer(&gTTDepth2_cpu, temp, 0);
+    if (res != S_OK)
+    {
+        printf("\nFailed to get GPU mapping for depth2 sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+    }
+#else
     res = cudaMalloc(&gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
     if (res != S_OK)
     {
         printf("\nFailed to allocate GPU depth2 transposition table of %d bytes, with error: %s\n", SHALLOW_TT2_SIZE * sizeof(uint64), cudaGetErrorString(res));
     }
+#endif
     hugeMemset(gTTDepth2_cpu, SHALLOW_TT2_SIZE * sizeof(uint64));
 
+    // first shallow TT (for storing depth 3 positions)
+#if USE_SYSMEM_HASH_FOR_SHALLOW_TT3 == 1
+    // try allocating in system memory
+    res = cudaHostAlloc(&temp, SHALLOW_TT3_SIZE * sizeof(uint64), cudaHostAllocMapped | cudaHostAllocWriteCombined);
+    if (res != S_OK)
+    {
+        printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT3_SIZE * sizeof(uint64), cudaGetErrorString(res));
+    }
+    res = cudaHostGetDevicePointer(&gTTDepth3_cpu, temp, 0);
+    if (res != S_OK)
+    {
+        printf("\nFailed to get GPU mapping for depth3 sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+    }
+#else
+    res = cudaMalloc(&gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
+    if (res != S_OK)
+    {
+        printf("\nFailed to allocate GPU depth3 transposition table of %d bytes, with error: %s\n", SHALLOW_TT3_SIZE * sizeof(uint64), cudaGetErrorString(res));
+    }
+#endif
+    hugeMemset(gTTDepth3_cpu, SHALLOW_TT3_SIZE * sizeof(uint64));
+
 	// third shallow transposition table (for storing depth 4 positions)
+#if USE_SYSMEM_HASH_FOR_SHALLOW_TT4 == 1
+    // try allocating in system memory
+    res = cudaHostAlloc(&temp, SHALLOW_TT4_SIZE * sizeof(uint64), cudaHostAllocMapped | cudaHostAllocWriteCombined);
+    if (res != S_OK)
+    {
+        printf("\nFailed to allocate GPU depth4 transposition table of %d bytes, with error: %s\n", SHALLOW_TT4_SIZE * sizeof(uint64), cudaGetErrorString(res));
+    }
+    res = cudaHostGetDevicePointer(&gTTDepth4_cpu, temp, 0);
+    if (res != S_OK)
+    {
+        printf("\nFailed to get GPU mapping for depth4 sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+    }
+#else
     res = cudaMalloc(&gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
     if (res != S_OK)
     {
         printf("\nFailed to allocate GPU depth4 transposition table of %d bytes, with error: %s\n", SHALLOW_TT4_SIZE * sizeof(uint64), cudaGetErrorString(res));
     }
+#endif
     hugeMemset(gTTDepth4_cpu, SHALLOW_TT4_SIZE * sizeof(uint64));
 		
 #if USE_SHALLOW_DEPTH5_TT == 1
