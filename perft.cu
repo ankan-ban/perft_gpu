@@ -1,10 +1,8 @@
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 #include "perft_bb.h"
 #include <math.h>
-
-#if PERFT_VERIF_MODE == 1
-#include <time.h>
-#include <conio.h>
-#endif
+#include <stdlib.h>
 
 class EventTimer {
 public:
@@ -35,8 +33,6 @@ private:
   cudaEvent_t mStart, mStop;
 };
 
-
-
 // for timing CPU code : start
 double gTime;
 #define START_TIMER { \
@@ -50,21 +46,27 @@ double gTime;
 
 void initGPU(TTInfo &TTs)
 {
-    int hr;
+    cudaError_t cudaStatus;
 
-#if USE_PREALLOCATED_MEMORY == 1
+    // Choose which GPU to run on, change this on a multi-GPU system.
+    cudaStatus = cudaSetDevice(0);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
+        exit(0);
+    }
+
     // allocate the buffer to be used by device code memory allocations
-    hr = cudaMalloc(&preAllocatedBufferHost, PREALLOCATED_MEMORY_SIZE);
-    if (hr != 0)
-        printf("error in malloc for preAllocatedBuffer");
+    cudaStatus = cudaMalloc(&preAllocatedBufferHost, PREALLOCATED_MEMORY_SIZE);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "error in malloc for preAllocatedBuffer, error desc: %s", cudaGetErrorString(cudaStatus));
+        exit(0);
+    }
     else
+    {
         printf("\nAllocated preAllocatedBuffer of %d bytes, address: %X\n", PREALLOCATED_MEMORY_SIZE, preAllocatedBufferHost);
+    }
 
     cudaMemset(&preAllocatedMemoryUsed, 0, sizeof(uint32));
-#else
-    hr = cudaDeviceSetLimit(cudaLimitMallocHeapSize, 1*1024*1024*1024); // 1 GB
-    printf("cudaDeviceSetLimit cudaLimitMallocHeapSize returned %d\n", hr);
-#endif
 
 #if USE_TRANSPOSITION_TABLE == 1
     // allocate memory for Transposition tables
@@ -114,13 +116,6 @@ void removeNewLine(char *str)
         str++;
     }
 }
-
-
-__global__ void testKernel()
-{
-    printf("\nHello cuda world!\n");
-}
-
 
 TTInfo TransTables;
 
@@ -195,9 +190,17 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
     uint64 *gpu_perft;
     void *serial_perft_stack;
 
-    cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-    cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
-    cudaMalloc(&gpu_perft, sizeof(uint64));
+    cudaError_t cudaStatus;
+
+    cudaStatus = cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
+    if (cudaStatus != cudaSuccess) printf("cudaMalloc failed for gpuBoard, Err id: %d, str: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
+
+    cudaStatus = cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
+    if (cudaStatus != cudaSuccess) printf("cudaMalloc failed for serial_perft_stack, Err id: %d, str: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
+
+    cudaStatus = cudaMalloc(&gpu_perft, sizeof(uint64));
+    if (cudaStatus != cudaSuccess) printf("cudaMalloc failed for gpu_perft, Err id: %d, str: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
+
 
     printf("\n");
     uint64 perft;
@@ -222,111 +225,6 @@ int main(int argc, char *argv[])
 
     MoveGeneratorBitboard::init();
 
-#if PERFT_VERIF_MODE == 1
-    FILE *fpInp;    // input file
-    FILE *fpOp;     // output file
-
-    int i = 0;
-    if (argc !=2)
-    {
-        printf("usage: perft14_verif <inFile>\n");
-        return 0;
-    }
-
-    char opFile[1024];
-    sprintf(opFile, "%s.op", argv[1]);
-    printf("filename of op: %s", opFile);
-
-    fpInp = fopen(argv[1], "rb+");
-    fpOp  = fopen(opFile, "ab+");
-
-    fseek(fpOp, 0, SEEK_SET);
-
-    cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
-    HexaBitBoardPosition *gpuBoard;
-    uint64 *gpu_perft;
-    HexaBitBoardPosition *serial_perft_stack;
-    cudaMalloc(&gpuBoard, sizeof(HexaBitBoardPosition));
-    cudaMalloc(&serial_perft_stack, GPU_SERIAL_PERFT_STACK_SIZE);
-    cudaMalloc(&gpu_perft, sizeof(uint64));
-
-    clock_t start, end;
-    start = clock();    
-    
-    char line[1024];
-    int j=0;
-    while(fgets(line,1024,fpInp))
-    {
-        if (_kbhit())
-        {
-            printf("\nPaused.. press any key to continue.\n");
-            getch();
-            getch();
-        }
-
-        i++;
-        if (fgets(opFile, 1024, fpOp))
-        {
-            // skip already processed records
-            continue;
-        }
-
-        Utils::readFENString(line, &testBoard);
-        HexaBitBoardPosition testBB;
-
-        //Utils::dispBoard(&testBoard);
-        printf("\n%s", line);
-
-        Utils::board088ToHexBB(&testBB, &testBoard);
-        
-        uint32 launchDepth = 6;
-
-        cudaError_t err = cudaMemcpy(gpuBoard, &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
-        if (err != S_OK)
-            printf("cudaMemcpyHostToDevice returned %s\n", cudaGetErrorString(err));
-        cudaMemset(gpu_perft, 0, sizeof(uint64));
-#if USE_TRANSPOSITION_TABLE == 1
-        perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
-#else
-        perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, 7, serial_perft_stack, preAllocatedBufferHost, launchDepth);
-#endif
-
-        uint64 res;
-        err = cudaMemcpy(&res, gpu_perft, sizeof(uint64), cudaMemcpyDeviceToHost);
-        if (err != S_OK)
-            printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
-
-        printf("GPU Perft %d: %llu", 7, res);
-        // write to output file
-        removeNewLine(line);
-
-        // parse the occurence count (last number in the line)
-        char *ptr = line;
-        while (*ptr) ptr++;
-        while (*ptr != ' ') ptr--;
-        int occCount = atoi(ptr);
-
-        fprintf(fpOp, "%s %llu %llu\n", line, res, res * occCount);
-        fflush(fpOp);
-
-        end = clock();
-        double t = ((double)end - start) / CLOCKS_PER_SEC;
-        j++;
-        printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / j);
-        fflush(stdout);
-    }
-
-
-    cudaFree(gpuBoard);
-    cudaFree(gpu_perft);
-    cudaFree(serial_perft_stack);
-
-    fclose(fpInp);
-    fclose(fpOp);
-    return 0;
-#endif
-
-
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
     //Utils::readFENString("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", &testBoard); // start.. 20 positions
     Utils::readFENString("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -", &testBoard); // position 2 (caught max bugs for me)
@@ -349,12 +247,6 @@ int main(int argc, char *argv[])
     {
         printf("\nUsage perft_gpu <fen> <depth> [<launchdepth>]\n");
         printf("\nAs no paramaters were provided... running default test\n");
-        /*
-        printf("\nEnter FEN String: \n");
-        gets(fen);
-        printf("\nEnter max depth: ");
-        scanf("%d", &maxDepth);
-        */
     }
 
     if (strlen(fen) > 5)
@@ -394,7 +286,9 @@ int main(int argc, char *argv[])
     }
 
     if (maxDepth < launchDepth)
+    {
         launchDepth = maxDepth;
+    }
 
     int syncDepth = launchDepth - 1;    // at least last 3 levels are computed by a single kernel launch
 #if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
@@ -402,19 +296,22 @@ int main(int argc, char *argv[])
         syncDepth--;
 #endif
     if (syncDepth < 2)
+    {
         syncDepth = 2;
+    }
 
     // Ankan - for testing
-    printf("Calculated syncDepth was: %d\n", syncDepth);
-    //syncDepth = 9;
+    // printf("Calculated syncDepth was: %d\n", syncDepth);
 
+    /*
     cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, 5);
-    while (hr != S_OK)
+    while (hr != cudaSuccess)
     {
         printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth to depth %d failed. Error: %s ... trying with lower sync depth\n", syncDepth, cudaGetErrorString(hr));
         syncDepth--;
         hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     }
+    */
 
     // adjust the launchDepth again in case the cudaDeviceSetLimit call above failed...
     launchDepth = syncDepth + 1;
@@ -422,28 +319,14 @@ int main(int argc, char *argv[])
     launchDepth++;
 #endif
 
-    // Ankan - for testing
-    //testSingleLevelPerf(&testBB, 5);
-    //testSingleLevelMoveGen(&testBB, 4);
-    //maxDepth = 0;
-
-   
-    // for testing
-    //minDepth = 6;
-    //maxDepth = 7;
-    //launchDepth = 3;
-
-    launchDepth = 6;    // ankan for testing
+    // launchDepth = 6;    // ankan for testing
     
     for (int depth = minDepth; depth <= maxDepth;depth++)
     {
         dividedPerft(&testBB, depth, launchDepth);
     }
     
-
-#if USE_PREALLOCATED_MEMORY == 1
     cudaFree(preAllocatedBufferHost);
-#endif
     cudaDeviceReset();
     return 0;
 }

@@ -3,11 +3,9 @@
 // the routines that actually generate the moves
 #include "MoveGeneratorBitboard.h"
 
-//#if USE_PREALLOCATED_MEMORY == 1
            void   *preAllocatedBufferHost;
 __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;
-//#endif
 
 #if USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN == 1
 #include "moderngpu-master/include/kernels/scan.cuh"
@@ -118,7 +116,6 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 template<typename T>
 __device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
 {
-#if USE_PREALLOCATED_MEMORY == 1
     // align up the size to nearest 16 bytes (as some structures might have assumed 16 byte alignment?)
     size = ALIGN_UP(size, MEM_ALIGNMENT);
 
@@ -140,10 +137,6 @@ __device__ __forceinline__ int deviceMalloc(T **ptr, uint32 size)
     *ptr = (T*) ((uint8 *)preAllocatedBuffer + startOffset);
 
     //printf("\nAllocated %d bytes at address: %X\n", size, *ptr);
-
-#else
-    return cudaMalloc(ptr, size);
-#endif
 
     return S_OK;
 }
@@ -174,11 +167,7 @@ __device__ void deviceMultiAlloc(void **pointers[], int sizes[], int n)
 template<typename T>
 __device__ __forceinline__ void deviceFree(T *ptr)
 {
-#if USE_PREALLOCATED_MEMORY == 1
     // we don't free memory here (memory is freed when the recursive serial kernel gets back the control)
-#else
-    cudaFree(ptr);
-#endif
 }
 
 // makes the given move on the given position
@@ -1022,10 +1011,8 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition **positions, CMove *mov
 
         // when preallocated memory is used, we don't need to free memory
         // which also means that there is no need to wait for child kernel to finish
-#if USE_PREALLOCATED_MEMORY != 1
-        cudaDeviceSynchronize();
-        cudaStreamDestroy(childStream);
-#endif
+        // cudaDeviceSynchronize();
+        // cudaStreamDestroy(childStream);
     }
 #else
 
@@ -1130,10 +1117,8 @@ __global__ void perft_bb_gpu_depth3(HexaBitBoardPosition **positions, CMove *mov
 
         // when preallocated memory is used, we don't need to free memory
         // which also means that there is no need to wait for child kernel to finish
-#if USE_PREALLOCATED_MEMORY != 1
-        cudaDeviceSynchronize();
-        cudaStreamDestroy(childStream);
-#endif
+        // cudaDeviceSynchronize();
+        // cudaStreamDestroy(childStream);
     }
 #endif
 }
@@ -1480,7 +1465,7 @@ __global__ void perft_bb_gpu_safe(HexaBitBoardPosition **positions,  CMove *move
 
         // when preallocated memory is used, we don't need to free memory
         // which also means that there is no need to wait for child kernel to finish
-#if USE_PREALLOCATED_MEMORY != 1
+#if 0
         cudaDeviceSynchronize();
         deviceFree(firstLevelChildMoves);
         deviceFree(boards);

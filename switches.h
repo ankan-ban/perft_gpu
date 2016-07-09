@@ -1,8 +1,5 @@
 // this file contains the various compile time settings/swithes
 
-// compile a binary to verify perft(14) using list of perft(7) records
-#define PERFT_VERIF_MODE 1
-
 #define DEBUG_PRINT_MOVES 0
 #if DEBUG_PRINT_MOVES == 1
     #define DEBUG_PRINT_DEPTH 6
@@ -14,18 +11,13 @@
 // improves occupancy and performance (but doesn't work with debug info or debug builds)
 #define LIMIT_REGISTER_USE 0
 
-// don't call cudaMalloc/cudaFree from device code, 
-// suballocate from a pre-allocated buffer instead
-// (most of the routines now won't work when this is OFF - i.e, we now rely on this)
-#define USE_PREALLOCATED_MEMORY 1
-
 // 768 MB ... to keep space for transposition tables
 // just hope that this would be sufficient :'(
 
 // Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
 // use 1536 MB when not using hash tables (so that we can fit wider levels in a single launch)
-#define PREALLOCATED_MEMORY_SIZE (2 * 768 * 1024 * 1024)
+#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -65,7 +57,7 @@
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
 // it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
-#define USE_TRANSPOSITION_TABLE 1
+#define USE_TRANSPOSITION_TABLE 0
 
 #if USE_TRANSPOSITION_TABLE == 1
 
