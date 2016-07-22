@@ -3455,7 +3455,7 @@ void setupHashTables128b(TTInfo128b &tt)
     // 25 bits -> 32 million entries
     // 26 bits -> 64 million ...
     //           depth->     0        1       2      3       4       5       6       7       8       9      10      11      12      13      14      15         
-    const uint32 ttBits[] = {0,       0,     26,    26,     26,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
+    const uint32 ttBits[] = {0,       0,     25,    26,     26,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
     const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
     const bool   sysmem[] = {true, true,  false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 
