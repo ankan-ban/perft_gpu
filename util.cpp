@@ -3,10 +3,6 @@
 
 // Utilsity functions for reading FEN String, EPD file, displaying board, etc
 
-
-// used by the getPieceChar function
-static char pieceCharMapping[] = {'.', 'P', 'N', 'B', 'R', 'Q', 'K'};
-
 // gets the numeric code of the piece represented by a character
 uint8 Utils::getPieceCode(char piece) 
 {
@@ -40,28 +36,6 @@ uint8 Utils::getPieceCode(char piece)
 
 	}
 }
-
-// Gets char representation of a piece code
-char Utils::getPieceChar(uint8 code) 
-{
-    uint8 color = COLOR(code);
-    uint8 piece = PIECE(code);
-    char pieceChar = '.';
-
-    if (code != EMPTY_SQUARE)
-    {
-        assert((color == WHITE) || (color == BLACK));
-        assert((piece >= PAWN)  && (piece <= KING));
-		pieceChar = pieceCharMapping[piece];
-    }
-
-    if (color == BLACK)
-    {
-        pieceChar += ('p' - 'P');
-    }
-    return pieceChar;
-}
-
 
 /* 
   Format of board in text file (e.g. Starting Position):
@@ -112,37 +86,6 @@ void Utils::readBoardFromFile(char filename[], BoardPosition *pos)
     char board[8][8];
     readBoardFromFile(filename, board);
     boardCharTo088(pos, board);
-}
-
-// methods to display the board (in the above form)
-
-void Utils::dispBoard(char board[8][8]) 
-{
-	int i,j;
-	for(i=0;i<8;i++) {
-		for(j=0;j<8;j++) 
-			printf("%c", board[i][j]);
-		printf("\n");
-	}
-}
-
-// convert to char board
-void Utils::board088ToChar(char board[8][8], BoardPosition *pos)
-{
-    int i, j;
-    int index088 = 0;
-
-    for (i = 7; i >= 0; i--)
-    {
-        for (j = 0; j < 8; j++)
-        {
-            char piece = getPieceChar(pos->board[index088]);
-			board[i][j] = piece;
-            index088++;
-        }
-        // skip 8 cells of padding
-        index088 += 8;
-    }
 }
 
 // convert 088 board to hex bit board
@@ -196,104 +139,6 @@ void Utils::board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088)
     posBB->halfMoveCounter = pos088->halfMoveCounter;
 }
 
-// convert bitboard to 088 board
-void Utils::boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
-{
-    memset(pos088, 0, sizeof(BoardPosition));
-
-
-    uint64 queens = posBB->bishopQueens & posBB->rookQueens;
-
-#define RANKS2TO7 0x00FFFFFFFFFFFF00ull
-    uint64 pawns = posBB->pawns & RANKS2TO7;
-
-    uint64 allPieces = posBB->kings | posBB->knights | pawns | posBB->rookQueens | posBB->bishopQueens;
-
-    for (uint8 i=0;i<64;i++)
-    {
-        uint8 rank = i >> 3;
-        uint8 file = i & 7;
-        uint8 index088 = INDEX088(rank, file);
-        
-        if (allPieces & BIT(i))
-        {
-            uint8 color = (posBB->whitePieces & BIT(i)) ? WHITE : BLACK;
-            uint8 piece = 0;
-            if (posBB->kings & BIT(i))
-            {
-                piece = KING;
-            } 
-            else if (posBB->knights & BIT(i))
-            {
-                piece = KNIGHT;
-            }
-            else if (pawns & BIT(i))
-            {
-                piece = PAWN;
-            }
-            else if (queens & BIT(i))
-            {
-                piece = QUEEN;
-            }
-            else if (posBB->bishopQueens & BIT(i))
-            {
-                piece = BISHOP;
-            }
-            else if (posBB->rookQueens & BIT(i))
-            {
-                piece = ROOK;
-            }
-            assert(piece);
-
-            pos088->board[index088] = COLOR_PIECE(color, piece);
-        }
-    }
-
-    pos088->chance          = posBB->chance;
-    pos088->blackCastle     = posBB->blackCastle;
-    pos088->whiteCastle     = posBB->whiteCastle;
-    pos088->enPassent       = posBB->enPassent;
-    pos088->halfMoveCounter = posBB->halfMoveCounter;
-}
-
-
-void Utils::dispBoard(BoardPosition *pos)
-{
-    char board[8][8];
-    board088ToChar(board, pos);
-
-    printf("\nBoard Position: \n");
-    dispBoard(board);
-    printf("\nGame State: \n");
-
-    if (pos->chance == WHITE)
-    {
-        printf("White to move\n");
-    }
-    else
-    {
-        printf("Black to move\n");
-    }
-
-    if (pos->enPassent)
-    {
-        printf("En passent allowed for file: %d\n", pos->enPassent);
-    }
-
-    printf("Allowed Castlings:\n");
-
-    if (pos->whiteCastle & CASTLE_FLAG_KING_SIDE)
-        printf("White King Side castle\n");
-
-    if (pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE)
-        printf("White Queen Side castle\n");
-
-    if (pos->blackCastle & CASTLE_FLAG_KING_SIDE)
-        printf("Black King Side castle\n");
-
-    if (pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE)
-        printf("Black Queen Side castle\n");
-}
 
 void Utils::clearBoard(BoardPosition *pos)
 {

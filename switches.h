@@ -61,6 +61,9 @@
 
 #if USE_TRANSPOSITION_TABLE == 1
 
+// use more 128 bit hashkeys - more reliable for large perft calculations
+#define USE_128_BIT_HASH 1
+
 // windows 64 bit vs 32 bit vs linux 64 bit compromise :-/
 // Windows allows overclocking (gives about 10% extra performance)
 // Windows 32 bit build is 7% faster than windows 64 bit build (for some unknown reason??)!
@@ -78,8 +81,8 @@
     #define USE_SYSMEM_HASH 1
 
     // 27 bits: 128 million entries  -> 2 GB
-    #define TT_BITS                  28
-    #define TT_SIZE                  (256 * 1024 * 1024)
+    #define TT_BITS                  27
+    #define TT_SIZE                  (128 * 1024 * 1024)
 
         // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
     #define SHALLOW_TT2_BITS         26
@@ -102,7 +105,7 @@
 
 // use system memory hash even for shallow transposition tables: useful for systems with less video memory and more system memory
 #define USE_SYSMEM_HASH_FOR_SHALLOW_TT2 0
-#define USE_SYSMEM_HASH_FOR_SHALLOW_TT3 1
+#define USE_SYSMEM_HASH_FOR_SHALLOW_TT3 0
 #define USE_SYSMEM_HASH_FOR_SHALLOW_TT4 1
 
 
@@ -167,6 +170,15 @@
 // as perft 2, perft 3 and perft 4 should always fit even in a 26 bit number
 
 #define TT_Entry HashEntryPerft
+
+// size is simply 2 power of bits
+#define GET_TT_SIZE_FROM_BITS(bits)   (1ull << (bits))
+
+// bits of the hash used as index into the transposition table
+#define GET_TT_INDEX_BITS(bits)       (GET_TT_SIZE_FROM_BITS(bits) - 1)
+
+// remaining bits (that are stored per hash entry)
+#define GET_TT_HASH_BITS(bits)        (ALLSET ^ GET_TT_INDEX_BITS(bits))
 
 #endif
 

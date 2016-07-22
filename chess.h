@@ -407,6 +407,86 @@ struct ShallowHashEntry
 };
 CT_ASSERT(sizeof(ShallowHashEntry) == 8);
 
+// 128-bit hash keys for deep-perfts:
+union HashKey128b
+{
+    struct
+    {
+        uint64 lowPart;
+        uint64 highPart;
+    };
+#ifdef __CUDA_ARCH__
+    uint4 rawVal;
+#endif
+    CUDA_CALLABLE_MEMBER HashKey128b() { lowPart = highPart = 0ull; }
+    CUDA_CALLABLE_MEMBER HashKey128b(uint64 l, uint64 h) { lowPart = l, highPart = h; }
+    
+    CUDA_CALLABLE_MEMBER HashKey128b operator^(const HashKey128b& b)
+    {
+        HashKey128b temp;
+        temp.lowPart = this->lowPart ^ b.lowPart;
+        temp.highPart = this->highPart ^ b.highPart;
+        return temp;
+    }
+
+    CUDA_CALLABLE_MEMBER HashKey128b operator^=(const HashKey128b& b)
+    {
+        this->lowPart = this->lowPart ^ b.lowPart;
+        this->highPart = this->highPart ^ b.highPart;
+        return *this;
+    }
+};
+CT_ASSERT(sizeof(HashKey128b) == 16);
+
+struct ShallowHashEntry128b
+{
+    union
+    {
+        struct {
+            HashKey128b hashKey;     // most significant 40 + 64 bits used
+        };
+        struct
+        {
+            // 24 LSB's are not important as the hash table size is at least 2 ^ 24 entries
+            // store perft (only for shallow depths) in the 24 LSB's
+            uint64 perftVal;    // least significant 24 bits used (aliased with hashKey.lowPart)
+            uint64 padding;
+        };
+    };
+};
+CT_ASSERT(sizeof(ShallowHashEntry128b) == 16);
+
+// hash table entry for Perft
+#pragma pack(push, 1)
+struct HashEntryPerft128b
+{
+    struct
+    {
+        union
+        {
+            struct
+            {
+                HashKey128b hashKey;
+            };
+            struct
+            {
+                // 8 LSB's are not important as the hash table size is at least > 256 entries
+                // store depth in the 8 LSB's
+                uint8 depth;
+                uint8 hashPart[15];  // most significant bits of the hash key
+            };
+        };
+        uint64 perftVal;
+    };
+};
+#pragma pack(pop)
+
+// WHY THIS CT_ASSERT FAILS.. even when size if 24 ???
+// it's sometimes 24 andd sometimes 32 -> very bad compiler, fixed with setting #pragma pack(push, 1) - which is good!
+// CT_ASSERT((sizeof(HashEntryPerft128b) == 24) || (sizeof(HashEntryPerft128b) == 32));
+// TODO: check if it can cause problem with 128 bit atomic read/writes?
+CT_ASSERT(sizeof(HashEntryPerft128b) == 24);
+
 /** Declarations for class/methods in Util.cpp **/
 
 // utility functions for reading FEN String, EPD file, displaying board, etc
@@ -437,6 +517,9 @@ CT_ASSERT(sizeof(ShallowHashEntry) == 8);
 
 */
 
+
+
+// used by the getPieceChar function
 class Utils {
 
 private:
@@ -445,7 +528,30 @@ private:
 	static uint8 getPieceCode(char piece); 
 
 	// Gets char representation of a piece code
-	static char getPieceChar(uint8 code);
+	//static char getPieceChar(uint8 code);
+
+    CUDA_CALLABLE_MEMBER static char getPieceChar(uint8 code)
+    {
+        const char pieceCharMapping[] = { '.', 'P', 'N', 'B', 'R', 'Q', 'K' };
+
+        uint8 color = COLOR(code);
+        uint8 piece = PIECE(code);
+        char pieceChar = '.';
+
+        if (code != EMPTY_SQUARE)
+        {
+            assert((color == WHITE) || (color == BLACK));
+            assert((piece >= PAWN) && (piece <= KING));
+            pieceChar = pieceCharMapping[piece];
+        }
+
+        if (color == BLACK)
+        {
+            pieceChar += ('p' - 'P');
+        }
+        return pieceChar;
+    }
+
 
 public:	
 
@@ -455,11 +561,150 @@ public:
 
 
 	// displays the board in human readable form
-	static void dispBoard(char board[8][8]); 
-    static void dispBoard(BoardPosition *pos);
+	//static void dispBoard(char board[8][8]); 
+    //static void dispBoard(BoardPosition *pos);
 
     // displays a move in human readable form
     static void displayMove(Move move);
+
+    // methods to display the board (in the above form)
+
+    CUDA_CALLABLE_MEMBER static void dispBoard(char board[8][8])
+    {
+        int i, j;
+        for (i = 0; i<8; i++) {
+            for (j = 0; j<8; j++)
+                printf("%c", board[i][j]);
+            printf("\n");
+        }
+    }
+
+    // convert to char board
+    CUDA_CALLABLE_MEMBER static void board088ToChar(char board[8][8], BoardPosition *pos)
+    {
+        int i, j;
+        int index088 = 0;
+
+        for (i = 7; i >= 0; i--)
+        {
+            for (j = 0; j < 8; j++)
+            {
+                char piece = getPieceChar(pos->board[index088]);
+                board[i][j] = piece;
+                index088++;
+            }
+            // skip 8 cells of padding
+            index088 += 8;
+        }
+    }
+
+
+    // convert bitboard to 088 board
+    CUDA_CALLABLE_MEMBER static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
+    {
+        memset(pos088, 0, sizeof(BoardPosition));
+
+
+        uint64 queens = posBB->bishopQueens & posBB->rookQueens;
+
+#define RANKS2TO7 0x00FFFFFFFFFFFF00ull
+        uint64 pawns = posBB->pawns & RANKS2TO7;
+
+        uint64 allPieces = posBB->kings | posBB->knights | pawns | posBB->rookQueens | posBB->bishopQueens;
+
+        for (uint8 i = 0; i<64; i++)
+        {
+            uint8 rank = i >> 3;
+            uint8 file = i & 7;
+            uint8 index088 = INDEX088(rank, file);
+
+            if (allPieces & BIT(i))
+            {
+                uint8 color = (posBB->whitePieces & BIT(i)) ? WHITE : BLACK;
+                uint8 piece = 0;
+                if (posBB->kings & BIT(i))
+                {
+                    piece = KING;
+                }
+                else if (posBB->knights & BIT(i))
+                {
+                    piece = KNIGHT;
+                }
+                else if (pawns & BIT(i))
+                {
+                    piece = PAWN;
+                }
+                else if (queens & BIT(i))
+                {
+                    piece = QUEEN;
+                }
+                else if (posBB->bishopQueens & BIT(i))
+                {
+                    piece = BISHOP;
+                }
+                else if (posBB->rookQueens & BIT(i))
+                {
+                    piece = ROOK;
+                }
+                assert(piece);
+
+                pos088->board[index088] = COLOR_PIECE(color, piece);
+            }
+        }
+
+        pos088->chance = posBB->chance;
+        pos088->blackCastle = posBB->blackCastle;
+        pos088->whiteCastle = posBB->whiteCastle;
+        pos088->enPassent = posBB->enPassent;
+        pos088->halfMoveCounter = posBB->halfMoveCounter;
+    }
+
+
+    CUDA_CALLABLE_MEMBER static void dispBoard(BoardPosition *pos)
+    {
+        char board[8][8];
+        board088ToChar(board, pos);
+
+        printf("\nBoard Position: \n");
+        dispBoard(board);
+        printf("\nGame State: \n");
+
+        if (pos->chance == WHITE)
+        {
+            printf("White to move\n");
+        }
+        else
+        {
+            printf("Black to move\n");
+        }
+
+        if (pos->enPassent)
+        {
+            printf("En passent allowed for file: %d\n", pos->enPassent);
+        }
+
+        printf("Allowed Castlings:\n");
+
+        if (pos->whiteCastle & CASTLE_FLAG_KING_SIDE)
+            printf("White King Side castle\n");
+
+        if (pos->whiteCastle & CASTLE_FLAG_QUEEN_SIDE)
+            printf("White Queen Side castle\n");
+
+        if (pos->blackCastle & CASTLE_FLAG_KING_SIDE)
+            printf("Black King Side castle\n");
+
+        if (pos->blackCastle & CASTLE_FLAG_QUEEN_SIDE)
+            printf("Black Queen Side castle\n");
+    }
+
+
+    CUDA_CALLABLE_MEMBER static void displayBoard(HexaBitBoardPosition *pos)
+    {
+        BoardPosition p;
+        boardHexBBTo088(&p, pos);
+        dispBoard(&p);
+    }
 
     CUDA_CALLABLE_MEMBER static void displayCompactMove(CMove move)
     {
@@ -520,11 +765,11 @@ public:
 
     }
 
-    static void board088ToChar(char board[8][8], BoardPosition *pos);
+    //static void board088ToChar(char board[8][8], BoardPosition *pos);
     static void boardCharTo088(BoardPosition *pos, char board[8][8]);
 
     static void board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088);
-    static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB);
+    //static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB);
 
 	// reads a FEN string and sets board and other Game Data accorodingly
 	static void readFENString(char fen[], BoardPosition *pos);

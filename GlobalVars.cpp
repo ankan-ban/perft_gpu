@@ -32,6 +32,10 @@ uint64 bishopMagicAttackTables    [64][1 << BISHOP_MAGIC_BITS];    // 256 KB
 // set of random numbers for zobrist hashing
 ZobristRandoms zob;
 
+// another set used for 128-bit hashes
+ZobristRandoms zob2;
+
+
 // the transposition tables
 #if USE_TRANSPOSITION_TABLE == 1
 TT_Entry *TranspositionTable = NULL;

@@ -4,6 +4,9 @@
 #include <math.h>
 #include <stdlib.h>
 
+// TODO: fix silly design!!!@##!!
+TTInfo128b TransTables128b;
+
 class EventTimer {
 public:
   EventTimer() : mStarted(false), mStopped(false) {
@@ -69,8 +72,13 @@ void initGPU(TTInfo &TTs)
     cudaMemset(&preAllocatedMemoryUsed, 0, sizeof(uint32));
 
 #if USE_TRANSPOSITION_TABLE == 1
+
+#if USE_128_BIT_HASH == 1
+    setupHashTables128b(TransTables128b);
+#else
     // allocate memory for Transposition tables
     setupHashTables(TTs);
+#endif
 #endif
 }
 
@@ -117,11 +125,12 @@ void removeNewLine(char *str)
     }
 }
 
-TTInfo TransTables;
+// TODO: Ankan - fix this crappy design, this is a global variable passed around in many places??
+TTInfo     TransTables;
 
 // do perft 10 using a single GPU call
 // bigger perfts are divided on the CPU
-#define GPU_LAUNCH_DEPTH 10
+#define GPU_LAUNCH_DEPTH 6
 
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoardPosition *gpuBoard, uint64 *gpu_perft, void *serial_perft_stack, int launchDepth, char *dispPrefix)
 {
@@ -129,7 +138,36 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
     CMove genMoves[MAX_MOVES];
     char  dispString[128];
 
+#if USE_TRANSPOSITION_TABLE == 1
+#if USE_128_BIT_HASH == 1
+    HashKey128b posHash128b;
+    posHash128b = MoveGeneratorBitboard::computeZobristKey128b(pos);
+
+    // check hash table
+    HashEntryPerft128b *hashTable = (HashEntryPerft128b *) TransTables128b.cpuTable[depth];
+    uint64 indexBits = TransTables128b.indexBits[depth];
+    uint64 hashBits = TransTables128b.hashBits[depth];
+    HashEntryPerft128b entry;
+
+    if (hashTable)
+    {
+        entry = hashTable[posHash128b.lowPart & indexBits];
+        // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
+        entry.hashKey.highPart ^= entry.perftVal;
+        entry.hashKey.lowPart ^= entry.perftVal;
+
+        if ((entry.hashKey.highPart == posHash128b.highPart) && ((entry.hashKey.lowPart & hashBits) == (posHash128b.lowPart & hashBits))
+            && (entry.depth == depth))
+        {
+            // hash hit
+            return entry.perftVal;
+        }
+    }
+#endif
+#endif
+
     uint32 nMoves = 0;
+    uint64 count = 0;
 
     if (depth <= GPU_LAUNCH_DEPTH)
     {
@@ -143,7 +181,13 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
             cudaMemset(gpu_perft, 0, sizeof(uint64));
             // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
             #if USE_TRANSPOSITION_TABLE == 1
-                perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
+                #if USE_128_BIT_HASH == 1
+
+                    perft_bb_gpu_simple_hash << <1, 1 >> > (gpuBoard, posHash128b, gpu_perft, depth, preAllocatedBufferHost,
+                                                            TransTables128b);
+                #else
+                    perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
+                #endif
             #else
                 perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
             #endif
@@ -158,27 +202,49 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
 #endif
         }
 
-        return res;
+        count = res;
     }
-
-    nMoves = generateBoards(pos, newPositions);
-
-    // generate moves also so that we can print them
-    generateMoves (pos, pos->chance, genMoves);
-
-    uint64 count = 0;
-
-    for (uint32 i=0; i < nMoves; i++)
+    else
     {
-        char moveString[10];
-        Utils::getCompactMoveString(genMoves[i], moveString);
-        strcpy(dispString, dispPrefix);
-        strcat(dispString, moveString);
-        uint64 childPerft = perft_bb_cpu_launcher(&newPositions[i], depth - 1, gpuBoard, gpu_perft, serial_perft_stack, launchDepth, dispString);
-        printf("%s   %20llu\n", dispString, childPerft);
-        fflush(stdout);
-        count += childPerft;
+        nMoves = generateBoards(pos, newPositions);
+
+        // generate moves also so that we can print them
+        generateMoves(pos, pos->chance, genMoves);
+
+
+        for (uint32 i = 0; i < nMoves; i++)
+        {
+            char moveString[10];
+            Utils::getCompactMoveString(genMoves[i], moveString);
+            strcpy(dispString, dispPrefix);
+            strcat(dispString, moveString);
+            uint64 childPerft = perft_bb_cpu_launcher(&newPositions[i], depth - 1, gpuBoard, gpu_perft, serial_perft_stack, launchDepth, dispString);
+            //printf("%s   %20llu\n", dispString, childPerft);
+            //fflush(stdout);
+            count += childPerft;
+        }
     }
+
+#if USE_TRANSPOSITION_TABLE == 1
+#if USE_128_BIT_HASH == 1
+    // store in hash table
+    // replace only if old entry was shallower (or of same depth)
+    if (hashTable && entry.depth <= depth)
+    {
+        HashEntryPerft128b newEntry;
+        newEntry.perftVal = count;
+        newEntry.hashKey.highPart = posHash128b.highPart;
+        newEntry.hashKey.lowPart = (posHash128b.lowPart & hashBits);
+        newEntry.depth = depth;
+
+        // XOR hash part with data part for lockless hashing
+        newEntry.hashKey.lowPart ^= newEntry.perftVal;
+        newEntry.hashKey.highPart ^= newEntry.perftVal;
+
+        hashTable[posHash128b.lowPart & indexBits] = newEntry;
+    }
+#endif
+#endif
     return count;
 }
 
@@ -200,7 +266,6 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
 
     cudaStatus = cudaMalloc(&gpu_perft, sizeof(uint64));
     if (cudaStatus != cudaSuccess) printf("cudaMalloc failed for gpu_perft, Err id: %d, str: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
-
 
     printf("\n");
     uint64 perft;
@@ -235,8 +300,8 @@ int main(int argc, char *argv[])
     //Utils::readFENString("3Q4/1Q4Q1/4Q3/2Q4R/Q4Q2/3Q4/1Q4Rp/1K1BBNNk w - - 0 1", &testBoard); // - 218 positions.. correct!
     //Utils::readFENString("r1b1kbnr/pppp1ppp/2n1p3/6q1/6Q1/2N1P3/PPPP1PPP/R1B1KBNR w KQkq - 4 4", &testBoard); // temp test
 
-    int minDepth = 1;
-    int maxDepth = 7;
+    int minDepth = 3;
+    int maxDepth = 3;
     char fen[1024];
     if (argc >= 3)
     {
@@ -303,7 +368,7 @@ int main(int argc, char *argv[])
     // Ankan - for testing
     printf("Calculated syncDepth was: %d\n", syncDepth);
 
-    
+#if USE_128_BIT_HASH == 0
     cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     while (hr != cudaSuccess)
     {
@@ -311,7 +376,7 @@ int main(int argc, char *argv[])
         syncDepth--;
         hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
     }
-   
+#endif   
 
     // adjust the launchDepth again in case the cudaDeviceSetLimit call above failed...
     launchDepth = syncDepth + 1;
