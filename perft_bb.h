@@ -2017,6 +2017,8 @@ __device__ __forceinline__ void storeTTEntry(TT_Entry &entry, uint64 hash, int d
     }
 }
 
+__device__ int maxMemoryUsed;
+
 //--------------------------------------------------------------------------------------------------
 // versions of the above kernel that use hash tables
 //--------------------------------------------------------------------------------------------------
@@ -2030,7 +2032,6 @@ __device__ __forceinline__ void storeTTEntry(TT_Entry &entry, uint64 hash, int d
 // hashTables[] array is the array of transposition tables for each depth
 // shallowHash[] array specifies if the hash table for the depth is a shallow hash table (128 bit hash entries - with value stored in index bits)
 // indexBits[] and hashbits[] arrays are bitmasks for obtaining index and hash value from a 64 bit low part of hash value (for each depth)
-#if 1
 __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *pos, HashKey128b hash, uint64 *perftOut, int depth, 
                                          void *devMemory, TTInfo128b ttInfo)                                         
 {
@@ -2095,9 +2096,9 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *pos, HashKey128b 
     currentLevelCount = nextLevelCount;
 
     deviceMalloc(&moveListOffsets, currentLevelCount * sizeof(int));
+    
     for (int i = 0; i < currentLevelCount; i++)
         moveListOffsets[i] = 0;
-
 
     int nBlocks;
 
@@ -2194,7 +2195,6 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *pos, HashKey128b 
         if (nextLevelCount == 0)
         {
             // unlikely, but possible
-            // printf("\nunlikely case hit!\n");
             break;
         }
 
@@ -2283,10 +2283,15 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *pos, HashKey128b 
         }
     }
 
-    //printf("\nmemory used: %d\n", preAllocatedMemoryUsed);
+#if 0
+    if (preAllocatedMemoryUsed > maxMemoryUsed)
+    {
+        maxMemoryUsed = preAllocatedMemoryUsed;
+        printf("\nmemory used: %d\n", preAllocatedMemoryUsed);
+    }
+#endif
     cudaStreamDestroy(childStream);
 }
-#endif
 
 
 // positions is array of pointers containing the old position on which moves[] is to be made
@@ -3415,75 +3420,5 @@ void setupHashTables(TTInfo &TransTables)
     TransTables.depth2 = gTTDepth2_cpu;
     TransTables.depth3 = gTTDepth3_cpu;
     TransTables.depth4 = gTTDepth4_cpu;
-}
-
-void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem)
-{
-    cudaError_t res;
-    void *temp = NULL;
-
-    if (sysmem)
-    {
-        // try allocating in system memory
-        res = cudaHostAlloc(&temp, size, cudaHostAllocMapped | cudaHostAllocWriteCombined);
-        if (res != cudaSuccess)
-        {
-            printf("\nFailed to allocate sysmem transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
-        }
-        res = cudaHostGetDevicePointer(devPointer, temp, 0);
-        if (res != S_OK)
-        {
-            printf("\nFailed to get GPU mapping for sysmem hash table, with error: %s\n", cudaGetErrorString(res));
-        }
-    }
-    else
-    {
-        res = cudaMalloc(devPointer, size);
-        if (res != cudaSuccess)
-        {
-            printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
-        }
-    }
-    *hostPointer = temp;
-    hugeMemset(devPointer, size);
-}
-
-
-void setupHashTables128b(TTInfo128b &tt)
-{
-    // size of transposition tables for each depth
-    // 25 bits -> 32 million entries
-    // 26 bits -> 64 million ...
-    //           depth->     0        1       2      3       4       5       6       7       8       9      10      11      12      13      14      15         
-    const uint32 ttBits[] = {0,       0,     25,    26,     26,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
-    const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
-    const bool   sysmem[] = {true, true,  false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-
-    const int  sharedHashBits = 25;
-    const bool  sharedsysmem = true;
-
-    // allocate the shared hash table
-    void *sharedTable, *sharedTableCPU;
-    allocAndClearMem(&sharedTable, &sharedTableCPU, GET_TT_SIZE_FROM_BITS(sharedHashBits) * sizeof(HashEntryPerft128b), sharedsysmem);
-
-    memset(&tt, 0, sizeof(tt));
-    for (int i = 2; i < MAX_PERFT_DEPTH; i++)
-    {
-        tt.shallowHash[i] = shallow[i];
-        uint32 bits = ttBits[i];
-        if (bits)
-        {
-            allocAndClearMem(&tt.hashTable[i], &tt.cpuTable[i],
-                GET_TT_SIZE_FROM_BITS(bits) * (shallow[i] ? sizeof(HashKey128b) : sizeof(HashEntryPerft128b)), sysmem[i]);
-        }
-        else
-        {
-            tt.hashTable[i] = sharedTable;
-            tt.cpuTable[i] = sharedTableCPU;
-            bits  = sharedHashBits;
-        }
-        tt.indexBits[i] = GET_TT_INDEX_BITS(bits);
-        tt.hashBits[i] = GET_TT_HASH_BITS(bits);
-    }
 }
 #endif

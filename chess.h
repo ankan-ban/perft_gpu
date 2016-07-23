@@ -229,6 +229,40 @@ struct HexaBitBoardPosition
 };
 CT_ASSERT(sizeof(HexaBitBoardPosition) == 48);
 
+// expanded bit board
+struct ExpandedBitBoard
+{
+    uint64 allPieces;
+    uint64 myPieces;
+    uint64 enemyPieces;
+
+    uint64 knights;
+    uint64 bishopQueens;
+    uint64 rookQueens;
+    uint64 kings;
+    uint64 pawns;
+
+    uint64 myPawns;
+    uint64 myKing;
+    uint64 myKnights;
+    uint64 myBishopQueens;
+    uint64 myRookQueens;
+
+    uint64 enemyPawns;
+    uint64 enemyKing;
+    uint64 enemyKnights;
+    uint64 enemyBishopQueens;
+    uint64 enemyRookQueens;
+
+    uint64 pinned;
+    uint64 threatened;
+
+    uint8  myKingIndex;
+    uint8  enPassent;
+    uint8  whiteCastle;
+    uint8  blackCastle;
+};
+
 // a more compact move structure (16 bit)
 // from http://chessprogramming.wikispaces.com/Encoding+Moves
 class CMove

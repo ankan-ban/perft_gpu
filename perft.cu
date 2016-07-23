@@ -4,9 +4,6 @@
 #include <math.h>
 #include <stdlib.h>
 
-// TODO: fix silly design!!!@##!!
-TTInfo128b TransTables128b;
-
 class EventTimer {
 public:
   EventTimer() : mStarted(false), mStopped(false) {
@@ -46,6 +43,90 @@ double gTime;
     end = clock(); \
     gTime = (double)(end - start)/1000.0;}
 // for timing CPU code : end
+
+
+void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem)
+{
+    cudaError_t res;
+    void *temp = NULL;
+
+    if (sysmem)
+    {
+        // try allocating in system memory
+        res = cudaHostAlloc(&temp, size, cudaHostAllocMapped | cudaHostAllocWriteCombined);
+        if (res != cudaSuccess)
+        {
+            printf("\nFailed to allocate sysmem transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+        }
+        res = cudaHostGetDevicePointer(devPointer, temp, 0);
+        if (res != S_OK)
+        {
+            printf("\nFailed to get GPU mapping for sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+        }
+    }
+    else
+    {
+        res = cudaMalloc(devPointer, size);
+        if (res != cudaSuccess)
+        {
+            printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+        }
+    }
+    *hostPointer = temp;
+    hugeMemset(devPointer, size);
+}
+
+
+void setupHashTables128b(TTInfo128b &tt)
+{
+    // size of transposition tables for each depth
+    // 25 bits -> 32 million entries
+    // 26 bits -> 64 million ...
+    //           depth->     0        1      2      3       4       5       6       7       8       9      10      11      12      13      14      15         
+
+    const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
+
+    // settings for 12 GB card, + 16 GB sysmem
+#if 0
+    const uint32 ttBits[] = {0,       0,    24,     28,     28,     26,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+    const bool   sysmem[] = {true, true, false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+#else
+    // settings for laptop (2 GB card + 16 GB sysmem)
+    const uint32 ttBits[] = {0,       0,     25,     26,     26,     25,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+    const bool   sysmem[] = {true, true,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+#endif
+
+    const int  sharedHashBits = 25;
+    const bool  sharedsysmem = true;
+
+    // allocate the shared hash table
+    void *sharedTable, *sharedTableCPU;
+    allocAndClearMem(&sharedTable, &sharedTableCPU, GET_TT_SIZE_FROM_BITS(sharedHashBits) * sizeof(HashEntryPerft128b), sharedsysmem);
+
+    memset(&tt, 0, sizeof(tt));
+    for (int i = 2; i < MAX_PERFT_DEPTH; i++)
+    {
+        tt.shallowHash[i] = shallow[i];
+        uint32 bits = ttBits[i];
+        if (bits)
+        {
+            allocAndClearMem(&tt.hashTable[i], &tt.cpuTable[i],
+                GET_TT_SIZE_FROM_BITS(bits) * (shallow[i] ? sizeof(HashKey128b) : sizeof(HashEntryPerft128b)), sysmem[i]);
+        }
+        else
+        {
+            tt.hashTable[i] = sharedTable;
+            tt.cpuTable[i] = sharedTableCPU;
+            bits  = sharedHashBits;
+        }
+        tt.indexBits[i] = GET_TT_INDEX_BITS(bits);
+        tt.hashBits[i] = GET_TT_HASH_BITS(bits);
+    }
+}
+
+// TODO: Ankan - fix this crappy design, this is a global variable passed around in many places??
+TTInfo     TransTables;
+TTInfo128b TransTables128b;
 
 void initGPU(TTInfo &TTs)
 {
@@ -125,9 +206,6 @@ void removeNewLine(char *str)
     }
 }
 
-// TODO: Ankan - fix this crappy design, this is a global variable passed around in many places??
-TTInfo     TransTables;
-
 // do perft 10 using a single GPU call
 // bigger perfts are divided on the CPU
 #define GPU_LAUNCH_DEPTH 6
@@ -206,14 +284,40 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
     }
     else
     {
-        nMoves = generateBoards(pos, newPositions);
-
+        //nMoves = generateBoards(pos, newPositions);
         // generate moves also so that we can print them
-        generateMoves(pos, pos->chance, genMoves);
 
+#if 1
+         nMoves = generateMoves(pos, pos->chance, genMoves);
+#else
+        // Ankan TODO: there is some bug here!
 
+        // generate all non-captures first to reduce hash table trashing
+        if (pos->chance == WHITE)
+        {
+            ExpandedBitBoard ebb;
+            ebb = MoveGeneratorBitboard::ExpandBitBoard<WHITE>(pos);
+            nMoves  = MoveGeneratorBitboard::generateNonCaptures<WHITE>(&ebb, genMoves);
+            nMoves += MoveGeneratorBitboard::generateCaptures<WHITE>(&ebb, &genMoves[nMoves]);
+        }
+        else
+        {
+            ExpandedBitBoard ebb;
+            ebb = MoveGeneratorBitboard::ExpandBitBoard<BLACK>(pos);
+            nMoves = MoveGeneratorBitboard::generateNonCaptures<BLACK>(&ebb, genMoves);
+            nMoves += MoveGeneratorBitboard::generateCaptures<BLACK>(&ebb, &genMoves[nMoves]);
+        }
+#endif
         for (uint32 i = 0; i < nMoves; i++)
         {
+            newPositions[i] = *pos;
+            uint64 fakeHash = 0;
+
+            if (pos->chance == WHITE)
+                MoveGeneratorBitboard::makeMove<WHITE, false>(&newPositions[i], fakeHash, genMoves[i]);
+            else
+                MoveGeneratorBitboard::makeMove<BLACK, false>(&newPositions[i], fakeHash, genMoves[i]);
+
             char moveString[10];
             Utils::getCompactMoveString(genMoves[i], moveString);
             strcpy(dispString, dispPrefix);
@@ -386,7 +490,7 @@ int main(int argc, char *argv[])
 
     // launchDepth = 6;    // ankan for testing
     
-    for (int depth = minDepth; depth <= maxDepth;depth++)
+    for (int depth = minDepth; depth <= maxDepth; depth++)
     {
         dividedPerft(&testBB, depth, launchDepth);
     }
