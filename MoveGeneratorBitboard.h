@@ -186,11 +186,6 @@ extern uint64           randoms[2000];    // set of 2000 random numbers (defined
 extern ZobristRandoms   zob;              // the random numbers actually used
 extern ZobristRandoms   zob2;             // the random numbers actually used (second set - used only for 128 bit hashes)
 
-#if USE_TRANSPOSITION_TABLE == 1
-extern TT_Entry *TranspositionTable;
-extern uint64   *ShallowTT;
-#endif
-
 #ifndef SKIP_CUDA_CODE
 
 // gpu version of the above data structures
@@ -1210,12 +1205,6 @@ CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static uint64 multiKnightAttacks(uint64 kn
     static void destroy()
     {
 #if USE_TRANSPOSITION_TABLE == 1
-        if (TranspositionTable)
-            free(TranspositionTable);
-
-        if (ShallowTT)
-            free(ShallowTT);
-
         // Ankan: TODO: free gpu transposition tables!
 #endif
 

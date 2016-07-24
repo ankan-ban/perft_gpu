@@ -17,7 +17,7 @@
 // Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
 // and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
 // use 1536 MB when not using hash tables (so that we can fit wider levels in a single launch)
-#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024)
+#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024ull)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
@@ -28,35 +28,13 @@
 // Ankan - improves performance on Maxwell a LOT!
 #define USE_CONSTANT_MEMORY_FOR_LUT 1
 
-// use parallel scan and interval expand algorithms (from modern gpu lib) for 
-// performing the move list scan and 'expand' operation to set correct board pointers for second level child moves
-
-// Another possible idea to avoid this operation is to have GenerateMoves() generate another array containing the indices 
-// of the parent boards that generated the move (i.e, the global thread index for generateMoves kernel)
-// A scan will still be needed to figure out starting address to write, but we won't need the interval expand
-#define USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN 1
-
-#if USE_INTERVAL_EXPAND_FOR_MOVELIST_SCAN == 1
-// launch the last three plys in a single kernel (default is to lauch last two plys)
-// doesn't really help much in regular positions and even hurts performance in 'good' positions 
-//  ~ +4% in start position, -5% in pos2, +20% in pos3, -2.5% in pos4 and pos5
-// drastically improves performance (upto 2X) in very bad positions (with very low branching factors)
-// with hash tables, could be more helpful in regular positions also
-#define PARALLEL_LAUNCH_LAST_3_LEVELS 1
-#endif
-
 // flag en-passent capture only when it's possible (in next move)
 // default is to flag en-passent on every double pawn push
 // This switch works only using using makeMove()
 // This helps A LOT when using transposition tables (> 50% improvement in perft(12) time)!
 #define EXACT_EN_PASSENT_FLAGGING 1
 
-// combine multiple memory requests into single request to save on number of atomicAdds
-// doesn't seem to help at all!
-#define COMBINE_DEVICE_MALLOCS 0
-
 // make use of a hash table to avoid duplicate calculations due to transpositions
-// it's assumed that INTERVAL_EXPAND is enabled (as it's always used by the hashed perft routine)
 #define USE_TRANSPOSITION_TABLE 1
 
 #if USE_TRANSPOSITION_TABLE == 1
@@ -73,103 +51,12 @@
 // 9 JUL 2016: Looks like on Windows 10 and with latest drivers, there is no longer any limitation. 
 //  .. except for cudaHostAlloc() which doesn't seem to allow allocating > 6GB of memory on 16 GB system :-/
 
-#ifdef _WIN64
-    // little bit more memory to hold bigger pointers
-    //#define PREALLOCATED_MEMORY_SIZE (1024 * 1024 * 1024)
-
-    // use system memory hash table (only useful in 64 bit builds otherwise we run of VA space before running out of vid memory)
-    #define USE_SYSMEM_HASH 1
-
-    // 27 bits: 128 million entries  -> 2 GB
-    #define TT_BITS                  27
-    #define TT_SIZE                  (128 * 1024 * 1024)
-
-        // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
-    #define SHALLOW_TT2_BITS         26
-    #define SHALLOW_TT3_BITS         27
-    #define SHALLOW_TT4_BITS         27
-#else
-    #define PREALLOCATED_MEMORY_SIZE (768 * 1024 * 1024)
-
-    #define USE_SYSMEM_HASH 0
-
-    // 25 bits: 32 million entries  -> 512 MB
-    #define TT_BITS                  25
-    #define TT_SIZE                  (32 * 1024 * 1024)
-
-    // 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)    
-    #define SHALLOW_TT2_BITS         25
-    #define SHALLOW_TT3_BITS         26
-    #define SHALLOW_TT4_BITS         25
-#endif
-
-// use system memory hash even for shallow transposition tables: useful for systems with less video memory and more system memory
-#define USE_SYSMEM_HASH_FOR_SHALLOW_TT2 0
-#define USE_SYSMEM_HASH_FOR_SHALLOW_TT3 0
-#define USE_SYSMEM_HASH_FOR_SHALLOW_TT4 1
-
-
-// A bit risky: use a separate shallow hash table (64-bit entries) for holding depth 5 perfts
-// average branching factor of < 55 should be ok using 29 index bits
-// ANKAN - this seems buggy, or are we running out of bits? - TODO: debug and fix.
-#define USE_SHALLOW_DEPTH5_TT 0
-
-// size of the Deep transposition table (in number of entries)
-// maynot be a power of two
-// each entry is of 16 bytes
+// size of the transposition table (in number of entries)
+// for entries of 16 bytes (shallow TT entries)
 // 28 bits: 256 million entries -> 4 GB
 // 27 bits: 128 million entries -> 2 GB
 // 25 bits: 32 million entries  -> 512 MB
 #define TT_SIZE_FROM_BITS   (1ull << TT_BITS)
-
-// bits of the zobrist hash used as index into the transposition table
-#define TT_INDEX_BITS  (TT_SIZE_FROM_BITS - 1)
-
-// remaining bits (that are stored per hash entry)
-#define TT_HASH_BITS   (ALLSET ^ TT_INDEX_BITS)
-
-
-// A transposition table for storing positions only at depth 2
-// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
-// 27 bits: 1 GB
-// 29 bits: 4 GB
-#define SHALLOW_TT2_SIZE         (1ull << SHALLOW_TT2_BITS)
-#define SHALLOW_TT2_INDEX_BITS   (SHALLOW_TT2_SIZE - 1)
-#define SHALLOW_TT2_HASH_BITS    (ALLSET ^ SHALLOW_TT2_INDEX_BITS)
-
-
-// A transposition table for storing only depth 3 positions
-// 26 bits: 64 million entries -> 512 MB (each entry is just single uint64: 8 bytes)
-// 27 bits: 1 GB
-// 28 bits: 2 GB
-// 29 bits: 4 GB
-// 30 bits: 8 GB
-#define SHALLOW_TT3_SIZE         (1ull << SHALLOW_TT3_BITS)
-#define SHALLOW_TT3_INDEX_BITS   (SHALLOW_TT3_SIZE - 1)
-#define SHALLOW_TT3_HASH_BITS    (ALLSET ^ SHALLOW_TT3_INDEX_BITS)
-
-// Transposition table for depth 4
-// 28 bits: 2 GB
-// 29 bits: 4 GB
-#define SHALLOW_TT4_SIZE         (1ull << SHALLOW_TT4_BITS)
-#define SHALLOW_TT4_INDEX_BITS   (SHALLOW_TT4_SIZE - 1)
-#define SHALLOW_TT4_HASH_BITS    (ALLSET ^ SHALLOW_TT4_INDEX_BITS)
-
-
-#if USE_SHALLOW_DEPTH5_TT == 1
-// Transposition table for depth 5
-// 28 bits: 2 GB
-// 29 bits: 4 GB
-#define SHALLOW_TT5_BITS         24
-#define SHALLOW_TT5_SIZE         (1ull << SHALLOW_TT5_BITS)
-#define SHALLOW_TT5_INDEX_BITS   (SHALLOW_TT5_SIZE - 1)
-#define SHALLOW_TT5_HASH_BITS    (ALLSET ^ SHALLOW_TT5_INDEX_BITS)
-#endif
-
-// for the three shallow transposition tables above, the perft value is stored in index bits
-// as perft 2, perft 3 and perft 4 should always fit even in a 26 bit number
-
-#define TT_Entry HashEntryPerft
 
 // size is simply 2 power of bits
 #define GET_TT_SIZE_FROM_BITS(bits)   (1ull << (bits))

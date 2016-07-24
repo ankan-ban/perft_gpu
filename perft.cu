@@ -4,6 +4,10 @@
 #include <math.h>
 #include <stdlib.h>
 
+//--------------------------------------------------------------------------------------------------
+//  Util functions (TODO: move these to utils.cpp/.h ?)
+//--------------------------------------------------------------------------------------------------
+
 class EventTimer {
 public:
   EventTimer() : mStarted(false), mStopped(false) {
@@ -45,23 +49,58 @@ double gTime;
 // for timing CPU code : end
 
 
-void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem)
+static void hugeMemset(void *data, uint64 size)
+{
+    uint8 *mem = (uint8*)data;
+    const uint64 c4G = 4ull * 1024 * 1024 * 1024;
+
+    while (size > c4G)
+    {
+        cudaMemset(mem, 0, c4G);
+
+        mem += c4G;
+        size -= c4G;
+    }
+
+    cudaMemset(mem, 0, size);
+}
+
+#if USE_TRANSPOSITION_TABLE == 1
+    // can't make this bigger than 6, as the _simple kernel (breadth first search) gets called directly
+    // breadth first search uses lot of memory and can can't hold bigger tree 
+    #define GPU_LAUNCH_DEPTH 6
+#else
+    // do perft 10 using a single GPU call
+    // bigger perfts are divided on the CPU
+    #define GPU_LAUNCH_DEPTH 10
+#endif
+
+void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem, int depth)
 {
     cudaError_t res;
     void *temp = NULL;
+    *devPointer = NULL;
 
     if (sysmem)
     {
-        // try allocating in system memory
-        res = cudaHostAlloc(&temp, size, cudaHostAllocMapped | cudaHostAllocWriteCombined);
-        if (res != cudaSuccess)
+        if (depth >= GPU_LAUNCH_DEPTH)
         {
-            printf("\nFailed to allocate sysmem transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+            // plain system memory
+            temp = malloc(size);
         }
-        res = cudaHostGetDevicePointer(devPointer, temp, 0);
-        if (res != S_OK)
+        else
         {
-            printf("\nFailed to get GPU mapping for sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+            // try allocating in system memory
+            res = cudaHostAlloc(&temp, size, cudaHostAllocMapped | cudaHostAllocWriteCombined);
+            if (res != cudaSuccess)
+            {
+                printf("\nFailed to allocate sysmem transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+            }
+            res = cudaHostGetDevicePointer(devPointer, temp, 0);
+            if (res != S_OK)
+            {
+                printf("\nFailed to get GPU mapping for sysmem hash table, with error: %s\n", cudaGetErrorString(res));
+            }
         }
     }
     else
@@ -73,10 +112,18 @@ void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool s
         }
     }
     *hostPointer = temp;
-    hugeMemset(devPointer, size);
+    if (devPointer)
+    {
+        hugeMemset(devPointer, size);
+    }
+    else
+    {
+        assert(*hostPointer);
+        memset(*hostPointer, 0, size);
+    }
 }
 
-
+#if USE_TRANSPOSITION_TABLE == 1
 void setupHashTables128b(TTInfo128b &tt)
 {
     // size of transposition tables for each depth
@@ -88,7 +135,7 @@ void setupHashTables128b(TTInfo128b &tt)
 
     // settings for 12 GB card, + 16 GB sysmem
 #if 0
-    const uint32 ttBits[] = {0,       0,    24,     28,     28,     26,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+    const uint32 ttBits[] = {0,       0,    24,     28,     27,     26,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
     const bool   sysmem[] = {true, true, false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 #else
     // settings for laptop (2 GB card + 16 GB sysmem)
@@ -101,7 +148,7 @@ void setupHashTables128b(TTInfo128b &tt)
 
     // allocate the shared hash table
     void *sharedTable, *sharedTableCPU;
-    allocAndClearMem(&sharedTable, &sharedTableCPU, GET_TT_SIZE_FROM_BITS(sharedHashBits) * sizeof(HashEntryPerft128b), sharedsysmem);
+    allocAndClearMem(&sharedTable, &sharedTableCPU, GET_TT_SIZE_FROM_BITS(sharedHashBits) * sizeof(HashEntryPerft128b), sharedsysmem, 9);
 
     memset(&tt, 0, sizeof(tt));
     for (int i = 2; i < MAX_PERFT_DEPTH; i++)
@@ -111,7 +158,7 @@ void setupHashTables128b(TTInfo128b &tt)
         if (bits)
         {
             allocAndClearMem(&tt.hashTable[i], &tt.cpuTable[i],
-                GET_TT_SIZE_FROM_BITS(bits) * (shallow[i] ? sizeof(HashKey128b) : sizeof(HashEntryPerft128b)), sysmem[i]);
+                GET_TT_SIZE_FROM_BITS(bits) * (shallow[i] ? sizeof(HashKey128b) : sizeof(HashEntryPerft128b)), sysmem[i], i);
         }
         else
         {
@@ -123,12 +170,12 @@ void setupHashTables128b(TTInfo128b &tt)
         tt.hashBits[i] = GET_TT_HASH_BITS(bits);
     }
 }
+#endif
 
-// TODO: Ankan - fix this crappy design, this is a global variable passed around in many places??
-TTInfo     TransTables;
+// TODO: avoid this global var?
 TTInfo128b TransTables128b;
 
-void initGPU(TTInfo &TTs)
+void initGPU()
 {
     cudaError_t cudaStatus;
 
@@ -153,13 +200,7 @@ void initGPU(TTInfo &TTs)
     cudaMemset(&preAllocatedMemoryUsed, 0, sizeof(uint32));
 
 #if USE_TRANSPOSITION_TABLE == 1
-
-#if USE_128_BIT_HASH == 1
     setupHashTables128b(TransTables128b);
-#else
-    // allocate memory for Transposition tables
-    setupHashTables(TTs);
-#endif
 #endif
 }
 
@@ -193,23 +234,6 @@ uint32 estimateLaunchDepth(HexaBitBoardPosition *pos)
     return depth;
 }
 
-void removeNewLine(char *str)
-{
-    while(*str)
-    {
-        if (*str == '\n' || *str == '\r')
-        {
-            *str = 0;
-            break;
-        }
-        str++;
-    }
-}
-
-// do perft 10 using a single GPU call
-// bigger perfts are divided on the CPU
-#define GPU_LAUNCH_DEPTH 6
-
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoardPosition *gpuBoard, uint64 *gpu_perft, void *serial_perft_stack, int launchDepth, char *dispPrefix)
 {
     HexaBitBoardPosition newPositions[MAX_MOVES];
@@ -217,7 +241,6 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
     char  dispString[128];
 
 #if USE_TRANSPOSITION_TABLE == 1
-#if USE_128_BIT_HASH == 1
     HashKey128b posHash128b;
     posHash128b = MoveGeneratorBitboard::computeZobristKey128b(pos);
 
@@ -242,7 +265,6 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
         }
     }
 #endif
-#endif
 
     uint32 nMoves = 0;
     uint64 count = 0;
@@ -259,13 +281,8 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
             cudaMemset(gpu_perft, 0, sizeof(uint64));
             // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
             #if USE_TRANSPOSITION_TABLE == 1
-                #if USE_128_BIT_HASH == 1
-
                     perft_bb_gpu_simple_hash << <1, 1 >> > (gpuBoard, posHash128b, gpu_perft, depth, preAllocatedBufferHost,
                                                             TransTables128b);
-                #else
-                    perft_bb_driver_gpu_hash <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth, TransTables);
-                #endif
             #else
                 perft_bb_driver_gpu <<<1, 1>>> (gpuBoard, gpu_perft, depth, serial_perft_stack, preAllocatedBufferHost, launchDepth);
             #endif
@@ -330,7 +347,6 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
     }
 
 #if USE_TRANSPOSITION_TABLE == 1
-#if USE_128_BIT_HASH == 1
     // store in hash table
     // replace only if old entry was shallower (or of same depth)
     if (hashTable && entry.depth <= depth)
@@ -347,7 +363,6 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, HexaBitBoa
 
         hashTable[posHash128b.lowPart & indexBits] = newEntry;
     }
-#endif
 #endif
     return count;
 }
@@ -389,9 +404,7 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
 int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
-
-    initGPU(TransTables);
-
+    initGPU();
     MoveGeneratorBitboard::init();
 
     // some test board positions from http://chessprogramming.wikispaces.com/Perft+Results
@@ -449,6 +462,9 @@ int main(int argc, char *argv[])
     uint32 launchDepth = estimateLaunchDepth(&testBB);
     launchDepth = min(launchDepth, 11); // don't go too high
 
+    // for best performance without GPU hash (also set PREALLOCATED_MEMORY_SIZE to 3 x 768MB)
+    // launchDepth = 6;    // ankan - test!
+
     if (argc >= 4)
     {
         launchDepth = atoi(argv[3]);
@@ -459,37 +475,6 @@ int main(int argc, char *argv[])
         launchDepth = maxDepth;
     }
 
-    int syncDepth = launchDepth - 1;    // at least last 3 levels are computed by a single kernel launch
-#if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
-        // sometimes more...
-        syncDepth--;
-#endif
-    if (syncDepth < 2)
-    {
-        syncDepth = 2;
-    }
-
-    // Ankan - for testing
-    printf("Calculated syncDepth was: %d\n", syncDepth);
-
-#if USE_128_BIT_HASH == 0
-    cudaError_t hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
-    while (hr != cudaSuccess)
-    {
-        printf("cudaDeviceSetLimit cudaLimitDevRuntimeSyncDepth to depth %d failed. Error: %s ... trying with lower sync depth\n", syncDepth, cudaGetErrorString(hr));
-        syncDepth--;
-        hr = cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, syncDepth);
-    }
-#endif   
-
-    // adjust the launchDepth again in case the cudaDeviceSetLimit call above failed...
-    launchDepth = syncDepth + 1;
-#if PARALLEL_LAUNCH_LAST_3_LEVELS == 1
-    launchDepth++;
-#endif
-
-    // launchDepth = 6;    // ankan for testing
-    
     for (int depth = minDepth; depth <= maxDepth; depth++)
     {
         dividedPerft(&testBB, depth, launchDepth);
