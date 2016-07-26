@@ -3,7 +3,8 @@
 // the routines that actually generate the moves
 #include "MoveGeneratorBitboard.h"
 
-           void   *preAllocatedBufferHost;
+#define MAX_GPUs 4
+           void   *preAllocatedBufferHost[MAX_GPUs];
 __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;
 
@@ -667,9 +668,6 @@ __device__ __host__ uint32 serial_perft_test(HexaBitBoardPosition *pos, int dept
 
 // this should be called for 'shallow' depths - i.e, the ones where each TT entry is just 128 bytes (and perft value fits in 24 bits)
 // use the next function for deeper depths (that need > 32 bit perft values)
-#if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4 )
-#endif
 template <typename PT, typename CT>
 __global__ void makemove_and_count_moves_single_level_hash128b(HexaBitBoardPosition *parentBoards, HashKey128b *parentHashes,
                                                                PT *parentCounters, int *indices,  CMove *moves, 
@@ -1151,6 +1149,11 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
 // versions of the above kernel that use hash tables
 //--------------------------------------------------------------------------------------------------
 
+__global__ void setPreallocatedMemory(void *devMemory)
+{
+    preAllocatedBuffer = devMemory;
+    preAllocatedMemoryUsed = 0;
+}
 
 // a simpler gpu perft routine (with hash table support)
 // only a single depth of kernel call nesting
@@ -1158,16 +1161,20 @@ __global__ void perft_bb_driver_gpu(HexaBitBoardPosition *pos, uint64 *globalPer
 // hashTables[] array is the array of transposition tables for each depth
 // shallowHash[] array specifies if the hash table for the depth is a shallow hash table (128 bit hash entries - with value stored in index bits)
 // indexBits[] and hashbits[] arrays are bitmasks for obtaining index and hash value from a 64 bit low part of hash value (for each depth)
+// TODO: skip hash table check/store for depth 2 also?
 __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *pos, HashKey128b hash, uint64 *perftOut, int depth, 
-                                         void *devMemory, TTInfo128b ttInfo)                                         
+                                         void *devMemory, TTInfo128b ttInfo, bool newBatch)                                         
 {
     void   **hashTables   = ttInfo.hashTable;
     bool   *shallowHash   = ttInfo.shallowHash;
     uint64 *indexBits     = ttInfo.indexBits;
     uint64 *hashBits      = ttInfo.hashBits;
 
-    preAllocatedBuffer = devMemory;
-    preAllocatedMemoryUsed = 0;
+    if (newBatch)
+    {
+        preAllocatedBuffer = devMemory;
+        preAllocatedMemoryUsed = 0;
+    }
 
     // High level algorithm - two passes:
     // downsweep :

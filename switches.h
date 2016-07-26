@@ -11,13 +11,10 @@
 // improves occupancy and performance (but doesn't work with debug info or debug builds)
 #define LIMIT_REGISTER_USE 0
 
-// 768 MB ... to keep space for transposition tables
-// just hope that this would be sufficient :'(
-
-// Keeping 768 MB as preallocated memory size allows us to use 1.5 GBs hash table 
-// and allows setting cudaLimitDevRuntimeSyncDepth to a decent depth
-// use 1536 MB when not using hash tables (so that we can fit wider levels in a single launch)
+// 768 MB preallocated memory size (for holding the perft tree in GPU memory)
+// on systems with more video memory (like Titan X), we can use 3x of this to hold bigger trees
 #define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024ull)
+//#define PREALLOCATED_MEMORY_SIZE (3 * 768 * 1024 * 1024ull)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft
 #define GPU_SERIAL_PERFT_STACK_SIZE (512 * 1024)
