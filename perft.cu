@@ -1,69 +1,8 @@
-#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "perft_bb.h"
 #include <math.h>
 #include <stdlib.h>
 
-//--------------------------------------------------------------------------------------------------
-//  Util functions (TODO: move these to utils.cpp/.h ?)
-//--------------------------------------------------------------------------------------------------
-
-class EventTimer {
-public:
-  EventTimer() : mStarted(false), mStopped(false) {
-    cudaEventCreate(&mStart);
-    cudaEventCreate(&mStop);
-  }
-  ~EventTimer() {
-    cudaEventDestroy(mStart);
-    cudaEventDestroy(mStop);
-  }
-  void start(cudaStream_t s = 0) { cudaEventRecord(mStart, s); 
-                                   mStarted = true; mStopped = false; }
-  void stop(cudaStream_t s = 0)  { assert(mStarted);
-                                   cudaEventRecord(mStop, s); 
-                                   mStarted = false; mStopped = true; }
-  float elapsed() {
-    assert(mStopped);
-    if (!mStopped) return 0; 
-    cudaEventSynchronize(mStop);
-    float elapsed = 0;
-    cudaEventElapsedTime(&elapsed, mStart, mStop);
-    return elapsed;
-  }
-
-private:
-  bool mStarted, mStopped;
-  cudaEvent_t mStart, mStop;
-};
-
-// for timing CPU code : start
-double gTime;
-#define START_TIMER { \
-    clock_t start, end; \
-    start = clock();
-
-#define STOP_TIMER \
-    end = clock(); \
-    gTime = (double)(end - start)/1000.0;}
-// for timing CPU code : end
-
-
-static void hugeMemset(void *data, uint64 size)
-{
-    uint8 *mem = (uint8*)data;
-    const uint64 c4G = 4ull * 1024 * 1024 * 1024;
-
-    while (size > c4G)
-    {
-        cudaMemset(mem, 0, c4G);
-
-        mem += c4G;
-        size -= c4G;
-    }
-
-    cudaMemset(mem, 0, size);
-}
 
 // can't make this bigger than 6, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
@@ -75,13 +14,28 @@ static void hugeMemset(void *data, uint64 size)
 // try launching multiple GPU kenerls in  parallel (on multiple GPUs)
 #define ENABLE_MULTIPLE_PARALLEL_LAUNCHES 1
 
-// no. of max parallel kernels
-// didn't help much (or at all!)
-#define MAX_STREAMS_PER_GPU 4
-cudaStream_t cudaStream[MAX_STREAMS_PER_GPU];
+// size of transposition tables for each depth
+// 25 bits -> 32  million entries (512 MB)
+// 26 bits -> 64  million ...     (1 GB)
+// 27 bits -> 128 million ...     (2 GB)
+// 28 bits -> 256 million ...     (4 GB)
+//           depth->     0        1      2      3       4       5       6       7       8       9      10      11      12      13      14      15         
 
-// whether or not use real different streams (use default stream.. aka tail parallelism when it's 0)
-#define SCHEDULE_MULTIPLE_STREAMS 0
+const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
+
+// settings for Titan X (12 GB card) + 16 GB sysmem
+#if 0
+const uint32 ttBits[] = {0,       0,    25,     28,     26,     26,     27,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+#else
+// settings for laptop (2 GB card + 16 GB sysmem)
+const uint32 ttBits[] = {0,       0,     25,     26,     26,     25,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, true,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+#endif
+
+const int  sharedHashBits = 27;
+const bool sharedsysmem = true;
+
 
 // the stream thing didn't work well (< 10% speedup for so much pain :-/)
 // try modifying the kernel to achieve better occupancy
@@ -105,6 +59,7 @@ HexaBitBoardPosition *gpuBoard[MAX_GPUs];
 uint64 *gpu_perft[MAX_GPUs];
 
 // to avoid allocating sysmem tables multiple times!
+// HACKY! - TODO: get rid of this and have the function allocate memory for all GPUs itself
 bool sysmemTablesAllocated = false;
 
 void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem, int depth)
@@ -179,29 +134,6 @@ void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool s
     }
 }
 
-
-// size of transposition tables for each depth
-// 25 bits -> 32  million entries (512 MB)
-// 26 bits -> 64  million ...     (1 GB)
-// 27 bits -> 128 million ...     (2 GB)
-// 28 bits -> 256 million ...     (4 GB)
-//           depth->     0        1      2      3       4       5       6       7       8       9      10      11      12      13      14      15         
-
-const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
-
-// settings for Titan X (12 GB card) + 16 GB sysmem
-#if 0
-const uint32 ttBits[] = {0,       0,    25,     28,     26,     26,     27,     25,     25,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-#else
-// settings for laptop (2 GB card + 16 GB sysmem)
-const uint32 ttBits[] = {0,       0,     25,     26,     26,     25,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-#endif
-
-const int  sharedHashBits = 27;
-const bool sharedsysmem = true;
-
 void setupHashTables128b(TTInfo128b &tt)
 {
     // allocate the shared hash table
@@ -269,6 +201,37 @@ void freeHashTables()
     memset(TransTables128b, 0, sizeof(TransTables128b));
 }
 
+// quick and dirty move-list sorting routine
+// only purpose is to get all quiet moves at the start and hope for better hash table usage
+void sortMoves(CMove *moves, int nMoves)
+{
+    int nq = 0;
+    CMove sortedMoves[MAX_MOVES];
+
+    for (int i = 0; i < nMoves; i++)
+    {
+        if (moves[i].getFlags() == CM_FLAG_QUIET_MOVE)
+        {
+            sortedMoves[nq++] = moves[i];
+        }
+    }
+
+    int s = 0, u = 0;
+    for (int i = 0; i < nMoves; i++)
+    {
+        if (moves[i].getFlags() == CM_FLAG_QUIET_MOVE)
+        {
+            sortedMoves[s++] = moves[i];
+        }
+        else
+        {
+            sortedMoves[nq + (u++)] = moves[i];
+        }
+    }
+
+    memcpy(moves, sortedMoves, sizeof(CMove)* nMoves);
+}
+
 // launch work on multiple streams (or GPUs), wait for enough parallel work is done, and only then wait for streams/GPUs to finish
 uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
 {
@@ -280,6 +243,7 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
     int nNewBoards = 0;     // no. of boards not found in transposition table
     int nMoves = generateMoves(pos, pos->chance, genMoves);
+    sortMoves(genMoves, nMoves);
 
     HashEntryPerft128b *hashTable = (HashEntryPerft128b *) TransTables128b[0].cpuTable[depth - 1];
     uint64 indexBits = TransTables128b[0].indexBits[depth - 1];
@@ -300,7 +264,6 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
         HashKey128b posHash128b;
         posHash128b = MoveGeneratorBitboard::computeZobristKey128b(&childPos);
 
-#if 1
         // check in hash table
         if (hashTable)
         {
@@ -318,7 +281,7 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
                 continue;
             }
         }
-#endif        
+
         {
             hashes[nNewBoards] = posHash128b;
 
@@ -330,9 +293,9 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
             uint64 *perfts = gpu_perft[gpu];
 
             cudaStatus = cudaMemcpy(&boards[nNewBoards], &childPos, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
-            if (cudaStatus != cudaSuccess) printf("\cudaMemcpy board failed, error: %s\n", cudaGetErrorString(cudaStatus));
+            if (cudaStatus != cudaSuccess) printf("\ncudaMemcpy board failed, error: %s\n", cudaGetErrorString(cudaStatus));
             cudaStatus = cudaMemset(&perfts[nNewBoards], 0, sizeof(uint64));
-            if (cudaStatus != cudaSuccess) printf("\cudaMemset perfts failed, error: %s\n", cudaGetErrorString(cudaStatus));
+            if (cudaStatus != cudaSuccess) printf("\ncudaMemset perfts failed, error: %s\n", cudaGetErrorString(cudaStatus));
 
             //printf("launching kernel with board: %X, perft: %X\n", &boards[nNewBoards], &perfts[nNewBoards]);
 
@@ -358,7 +321,6 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
         //printf("\n%d\n", perftResults[i]);
         count += perftResults[i];
 
-#if 1
         // store in hash table
         HashKey128b posHash128b = hashes[i];
 
@@ -380,12 +342,10 @@ uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
             hashTable[posHash128b.lowPart & indexBits] = newEntry;
         }
-#endif
     }
 
     return count;
 }
-
 
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
 {
@@ -446,27 +406,9 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 #endif
     {
 
-#if 1
-         nMoves = generateMoves(pos, pos->chance, genMoves);
-#else
-        // Ankan TODO: there is some bug here!
+        nMoves = generateMoves(pos, pos->chance, genMoves);
+        sortMoves(genMoves, nMoves);
 
-        // generate all non-captures first to reduce hash table trashing
-        if (pos->chance == WHITE)
-        {
-            ExpandedBitBoard ebb;
-            ebb = MoveGeneratorBitboard::ExpandBitBoard<WHITE>(pos);
-            nMoves  = MoveGeneratorBitboard::generateNonCaptures<WHITE>(&ebb, genMoves);
-            nMoves += MoveGeneratorBitboard::generateCaptures<WHITE>(&ebb, &genMoves[nMoves]);
-        }
-        else
-        {
-            ExpandedBitBoard ebb;
-            ebb = MoveGeneratorBitboard::ExpandBitBoard<BLACK>(pos);
-            nMoves = MoveGeneratorBitboard::generateNonCaptures<BLACK>(&ebb, genMoves);
-            nMoves += MoveGeneratorBitboard::generateCaptures<BLACK>(&ebb, &genMoves[nMoves]);
-        }
-#endif
         for (uint32 i = 0; i < nMoves; i++)
         {
             newPositions[i] = *pos;
@@ -536,14 +478,6 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
     }
     cudaSetDevice(0);
 
-#if 0
-    for (int i = 0; i < MAX_STREAMS_PER_GPU; i++)
-    {
-        cudaStatus = cudaStreamCreate(&cudaStream[i]);
-        if (cudaStatus != cudaSuccess) printf("cudaStreamCreate failed, Err id: %d, str: %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
-    }
-#endif
-
     printf("\n");
     uint64 perft;
     START_TIMER
@@ -561,12 +495,6 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
     }
     cudaSetDevice(0);
 
-#if 0
-    for (int i = 0; i < MAX_STREAMS_PER_GPU; i++)
-    {
-        cudaStreamDestroy(cudaStream[i]);
-    }
-#endif
 }
 #endif
 

@@ -23,6 +23,7 @@
     <ClInclude Include="MoveGeneratorBitboard.h" />
     <ClInclude Include="perft_bb.h" />
     <ClInclude Include="switches.h" />
+    <ClInclude Include="utils.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="GlobalVars.cpp" />
