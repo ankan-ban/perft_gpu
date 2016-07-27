@@ -460,24 +460,28 @@ CT_ASSERT(sizeof(ShallowHashEntry128b) == 16);
 #pragma pack(push, 1)
 struct HashEntryPerft128b
 {
-    struct
+    // WAR for silly compiler bug??
+    // it says that it can't call default constructor because it was deleted!!@??
+#if __CUDA_ARCH__
+   __device__ __host__ 
+#endif
+    HashEntryPerft128b() { }
+
+    union
     {
-        union
+        struct
         {
-            struct
-            {
-                HashKey128b hashKey;
-            };
-            struct
-            {
-                // 8 LSB's are not important as the hash table size is at least > 256 entries
-                // store depth in the 8 LSB's
-                uint8 depth;
-                uint8 hashPart[15];  // most significant bits of the hash key
-            };
+            HashKey128b hashKey;
         };
-        uint64 perftVal;
+        struct
+        {
+            // 8 LSB's are not important as the hash table size is at least > 256 entries
+            // store depth in the 8 LSB's
+            uint8 depth;
+            uint8 hashPart[15];  // most significant bits of the hash key
+        };
     };
+    uint64 perftVal;
 };
 #pragma pack(pop)
 

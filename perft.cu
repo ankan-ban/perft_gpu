@@ -2,6 +2,7 @@
 #include "perft_bb.h"
 #include <math.h>
 #include <stdlib.h>
+#include <thread>
 
 
 // can't make this bigger than 6, as the _simple kernel (breadth first search) gets called directly
@@ -12,7 +13,13 @@
 #define DIVIDED_PERFT_DEPTH 10
 
 // try launching multiple GPU kenerls in  parallel (on multiple GPUs)
-#define ENABLE_MULTIPLE_PARALLEL_LAUNCHES 1
+#define ENABLE_MULTIPLE_PARALLEL_LAUNCHES 0
+
+// use multiple CPU threads to split the tree at greater depth 
+// (disables simple round  robin scheduling - i.e, ENABLE_MULTIPLE_PARALLEL_LAUNCHES when enabled)
+#define PARALLEL_THREAD_GPU_SPLIT 1
+// depth at which work is split among multiple GPUs
+#define SPLIT_DEPTH 8
 
 // size of transposition tables for each depth
 // 25 bits -> 32  million entries (512 MB)
@@ -23,17 +30,22 @@
 
 const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-// settings for Titan X (12 GB card) + 16 GB sysmem
 #if 0
+// settings for Titan X (12 GB card) + 16 GB sysmem
 const uint32 ttBits[] = {0,       0,    25,     28,     26,     26,     27,     25,     25,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const int  sharedHashBits = 27;
+#elif 0
+// settings for home PC (GTX 970: 4 GB card + 8 GB sysmem)
+const uint32 ttBits[] = {0,       0,    25,     26,     26,     25,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const int  sharedHashBits = 25;
 #else
 // settings for laptop (2 GB card + 16 GB sysmem)
 const uint32 ttBits[] = {0,       0,     25,     26,     26,     25,     25,     25,     25,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, true,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-#endif
-
 const int  sharedHashBits = 27;
+#endif
 const bool sharedsysmem = true;
 
 
@@ -232,6 +244,122 @@ void sortMoves(CMove *moves, int nMoves)
     memcpy(moves, sortedMoves, sizeof(CMove)* nMoves);
 }
 
+
+uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix);
+
+thread_local int activeGpu = 0;
+
+enum eThreadStatus
+{
+    THREAD_IDLE = 0,
+    WORK_SUBMITTED = 1,
+    THREAD_WORKING = 2,
+    THREAD_TERMINATE_REQUEST = 3,
+};
+
+// 2 way communication between main thread and worker threads
+volatile eThreadStatus threadStatus[MAX_GPUs];
+
+// main thread -> worker threads
+volatile HexaBitBoardPosition *posForThread[MAX_GPUs];
+
+// worker threads -> main thread
+volatile uint64 *perftForThread[MAX_GPUs];
+
+void worker_thread_start(uint32 depth, uint32 gpuId)
+{
+    cudaSetDevice(gpuId);
+    activeGpu = gpuId;
+
+    threadStatus[gpuId] = THREAD_IDLE;
+
+    // wait for work
+    while (1)
+    {
+        if (threadStatus[gpuId] == THREAD_TERMINATE_REQUEST)
+        {
+            break;
+        }
+        else if (threadStatus[gpuId] == THREAD_IDLE)
+        {
+            continue;
+        }
+        else if (threadStatus[gpuId] == WORK_SUBMITTED)
+        {
+            threadStatus[gpuId] = THREAD_WORKING;
+            *(perftForThread[gpuId]) = perft_bb_cpu_launcher((HexaBitBoardPosition *) posForThread[gpuId], depth, "");
+            threadStatus[gpuId] = THREAD_IDLE;
+        }
+    }
+
+}
+
+// launch work on multiple threads (each associated with a single GPU), 
+// wait for enough parallel work is done, and only then wait for the threads to finish
+uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth)
+{
+    CMove genMoves[MAX_MOVES];
+    HexaBitBoardPosition childPos;
+    HexaBitBoardPosition childBoards[MAX_MOVES];
+    uint64 perftResults[MAX_MOVES];
+
+    int nMoves = generateMoves(pos, pos->chance, genMoves);
+    sortMoves(genMoves, nMoves);
+
+
+    std::thread threads[MAX_GPUs];
+    // Launch a thread for each GPU
+    for (int i = 0; i < numGPUs; ++i) {
+        threads[i] = std::thread(worker_thread_start, depth - 1, i);
+    }
+
+    for (int i = 0; i < nMoves; i++)
+    {
+        childPos = *pos;
+        uint64 fakeHash = 0;
+
+        if (pos->chance == WHITE)
+            MoveGeneratorBitboard::makeMove<WHITE, false>(&childPos, fakeHash, genMoves[i]);
+        else
+            MoveGeneratorBitboard::makeMove<BLACK, false>(&childPos, fakeHash, genMoves[i]);
+
+        childBoards[i] = childPos;
+
+        // find an idle worker thread to submit work
+        uint32 chosenThread = -1;
+        while (chosenThread == -1)
+        {
+            for (int t = 0; t < numGPUs; t++)
+                if (threadStatus[t] == THREAD_IDLE)
+                {
+                    chosenThread = t;
+                    break;
+                }
+        }
+
+        // submit work on the worker thread
+        posForThread[chosenThread] = &childBoards[i];
+        perftForThread[chosenThread] = &perftResults[i];
+        threadStatus[chosenThread] = WORK_SUBMITTED;
+    }
+
+    // wait for all threads to terminate
+    for (int t = 0; t < numGPUs; t++)
+    {
+        while (threadStatus[t] != THREAD_IDLE);
+        threadStatus[t] = THREAD_TERMINATE_REQUEST;
+        threads[t].join();
+    }
+    
+
+    uint64 count = 0;
+    for (int i = 0; i < nMoves; i++)
+    {
+        count += perftResults[i];
+    }
+    return count;
+}
+
 // launch work on multiple streams (or GPUs), wait for enough parallel work is done, and only then wait for streams/GPUs to finish
 uint64 perft_multi_stream_launcher(HexaBitBoardPosition *pos, uint32 depth)
 {
@@ -385,18 +513,25 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
         // launch GPU perft routine
         uint64 res;
         {
-            cudaMemcpy(gpuBoard[0], pos, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
-            cudaMemset(gpu_perft[0], 0, sizeof(uint64));
+            cudaMemcpy(gpuBoard[activeGpu], pos, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
+            cudaMemset(gpu_perft[activeGpu], 0, sizeof(uint64));
             // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
-            perft_bb_gpu_simple_hash <<<1, 1 >>> (gpuBoard[0], posHash128b, gpu_perft[0], depth, preAllocatedBufferHost[0],
-                                                    TransTables128b[0], true);
+            perft_bb_gpu_simple_hash <<<1, 1 >>> (gpuBoard[activeGpu], posHash128b, gpu_perft[activeGpu], depth, preAllocatedBufferHost[activeGpu],
+                                                    TransTables128b[activeGpu], true);
 
-            cudaError_t err = cudaMemcpy(&res, gpu_perft[0], sizeof(uint64), cudaMemcpyDeviceToHost);
+            cudaError_t err = cudaMemcpy(&res, gpu_perft[activeGpu], sizeof(uint64), cudaMemcpyDeviceToHost);
         }
 
         count = res;
     }
     else
+#if PARALLEL_THREAD_GPU_SPLIT == 1
+    if (depth == SPLIT_DEPTH)
+    {
+        count = perft_multi_threaded_gpu_launcher(pos, depth);
+    }
+    else
+#else
 #if ENABLE_MULTIPLE_PARALLEL_LAUNCHES == 1
     if (depth == GPU_LAUNCH_DEPTH + 1)
     {
@@ -404,8 +539,8 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
     }
     else
 #endif
+#endif
     {
-
         nMoves = generateMoves(pos, pos->chance, genMoves);
         sortMoves(genMoves, nMoves);
 
