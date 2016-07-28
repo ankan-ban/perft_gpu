@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <thread>
-
+#include <mutex>
 
 // can't make this bigger than 6, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
@@ -19,7 +19,7 @@
 // (disables simple round  robin scheduling - i.e, ENABLE_MULTIPLE_PARALLEL_LAUNCHES when enabled)
 #define PARALLEL_THREAD_GPU_SPLIT 1
 // depth at which work is split among multiple GPUs
-#define SPLIT_DEPTH 8
+#define SPLIT_DEPTH 10
 
 // size of transposition tables for each depth
 // 25 bits -> 32  million entries (512 MB)
@@ -30,10 +30,10 @@
 
 const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-#if 0
+#if 1
 // settings for Titan X (12 GB card) + 16 GB sysmem
-const uint32 ttBits[] = {0,       0,    25,     28,     26,     26,     27,     25,     25,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const uint32 ttBits[] = {0,       0,    25,     28,     28,      26,     27,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, true, false,  false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 27;
 #elif 0
 // settings for home PC (GTX 970: 4 GB card + 8 GB sysmem)
@@ -253,8 +253,9 @@ enum eThreadStatus
 {
     THREAD_IDLE = 0,
     WORK_SUBMITTED = 1,
-    THREAD_WORKING = 2,
-    THREAD_TERMINATE_REQUEST = 3,
+    THREAD_TERMINATE_REQUEST = 2,
+    THREAD_TERMINATED = 3,
+    THREAD_CREATED = 4
 };
 
 // 2 way communication between main thread and worker threads
@@ -265,6 +266,8 @@ volatile HexaBitBoardPosition *posForThread[MAX_GPUs];
 
 // worker threads -> main thread
 volatile uint64 *perftForThread[MAX_GPUs];
+
+std::mutex m;
 
 void worker_thread_start(uint32 depth, uint32 gpuId)
 {
@@ -286,12 +289,21 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
         }
         else if (threadStatus[gpuId] == WORK_SUBMITTED)
         {
-            threadStatus[gpuId] = THREAD_WORKING;
-            *(perftForThread[gpuId]) = perft_bb_cpu_launcher((HexaBitBoardPosition *) posForThread[gpuId], depth, "");
+            uint64 perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, "");
+#if 0
+            // Ankan - for testing
+            m.lock();
+            Utils::displayBoard(&pos);
+            printf("perft: %llu, gpuId: %d\n", perftVal, gpuId);
+            m.unlock();
+#endif
+
+            *(perftForThread[gpuId]) = perftVal;
             threadStatus[gpuId] = THREAD_IDLE;
         }
     }
 
+    threadStatus[gpuId] = THREAD_TERMINATED;
 }
 
 // launch work on multiple threads (each associated with a single GPU), 
@@ -309,8 +321,14 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 
     std::thread threads[MAX_GPUs];
     // Launch a thread for each GPU
-    for (int i = 0; i < numGPUs; ++i) {
+    for (int i = 0; i < numGPUs; ++i)
+    {
+        // create the thread
+        threadStatus[i] = THREAD_CREATED;
         threads[i] = std::thread(worker_thread_start, depth - 1, i);
+
+        // wait for the thread to get initialized
+        while (threadStatus[i] != THREAD_IDLE);
     }
 
     for (int i = 0; i < nMoves; i++)
@@ -348,6 +366,7 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     {
         while (threadStatus[t] != THREAD_IDLE);
         threadStatus[t] = THREAD_TERMINATE_REQUEST;
+        while (threadStatus[t] != THREAD_TERMINATED);
         threads[t].join();
     }
     
