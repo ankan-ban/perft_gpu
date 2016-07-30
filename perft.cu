@@ -422,7 +422,7 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             // gpu_perft is a single 64 bit integer which is updated using atomic adds by leave nodes
 
 #if ENABLE_GPU_SERIAL_LEVEL == 1
-            if (depth >= 5)
+            if (depth >= 6)
             {
                 perft_bb_gpu_launcher_hash<<<1, 1 >>> (gpuBoard[activeGpu], posHash128b, gpu_perft[activeGpu], depth, preAllocatedBufferHost[activeGpu],
                                                        TransTables128b[activeGpu]);
@@ -430,7 +430,7 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             else
 #endif
             {
-                perft_bb_gpu_simple_hash << <1, 1 >> > (gpuBoard[activeGpu], gpuHashes[activeGpu], gpu_perft[activeGpu], depth, preAllocatedBufferHost[activeGpu],
+                perft_bb_gpu_simple_hash << <1, 1 >> > (1, gpuBoard[activeGpu], gpuHashes[activeGpu], gpu_perft[activeGpu], depth, preAllocatedBufferHost[activeGpu],
                     TransTables128b[activeGpu], true);
             }
 

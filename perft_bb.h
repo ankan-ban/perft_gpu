@@ -1162,7 +1162,7 @@ __global__ void setPreallocatedMemory(void *devMemory)
 // shallowHash[] array specifies if the hash table for the depth is a shallow hash table (128 bit hash entries - with value stored in index bits)
 // indexBits[] and hashbits[] arrays are bitmasks for obtaining index and hash value from a 64 bit low part of hash value (for each depth)
 // TODO: skip hash table check/store for depth 2 also?
-__global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *positions, HashKey128b *hashes, uint64 *perfts, int depth,
+__global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positions, HashKey128b *hashes, uint64 *perfts, int depth,
                                          void *devMemory, TTInfo128b ttInfo, bool newBatch)                                         
 {
     void   **hashTables   = ttInfo.hashTable;
@@ -1170,8 +1170,10 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *positions, HashKe
     uint64 *indexBits     = ttInfo.indexBits;
     uint64 *hashBits      = ttInfo.hashBits;
 
-    HexaBitBoardPosition *pos = &positions[threadIdx.x];
-    uint64 *perftOut = &perfts[threadIdx.x];
+    // account for multiple threads (but still single block)
+    positions += count*threadIdx.x;
+    hashes += count*threadIdx.x;
+    perfts += count*threadIdx.x;
 
     if (newBatch)
     {
@@ -1210,9 +1212,18 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *positions, HashKe
     // only needed for debugging!
     HexaBitBoardPosition   *boards[MAX_PERFT_DEPTH];
 
+
     // special case for first level (root)
-    uint8 color = pos->chance;
-    nextLevelCount = countMoves(pos, color);
+    int *moveListOffsetsRoot;
+    deviceMalloc(&moveListOffsetsRoot, (1+count) * sizeof(int));
+    uint8 color = positions->chance;
+    for (int i = 0; i < count; i++)
+    {
+        int nMoves = countMoves(&positions[i], color);
+        moveListOffsetsRoot[i] = nextLevelCount;
+        nextLevelCount += nMoves;
+    }
+    moveListOffsetsRoot[count] = MAX_MOVES*MAX_MOVES;
 
     if (nextLevelCount == 0)
     {
@@ -1222,19 +1233,27 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *positions, HashKe
     }
 
     deviceMalloc(&childMoves, nextLevelCount * sizeof (CMove));
-    generateMoves(pos, color, childMoves);
+    for (int i = 0; i < count; i++)
+    {
+        generateMoves(&positions[i], color, &childMoves[moveListOffsetsRoot[i]]);
+    }
+    prevLevelBoards = positions;
+    prevLevelPerftCounters = perfts;
 
-    prevLevelBoards = pos;
-    prevLevelPerftCounters = perftOut;
-
-    prevLevelHashes = &hashes[threadIdx.x];
+    prevLevelHashes = hashes;
 
     currentLevelCount = nextLevelCount;
 
     deviceMalloc(&moveListOffsets, currentLevelCount * sizeof(int));
     
+    int rootPointer = 0;
     for (int i = 0; i < currentLevelCount; i++)
-        moveListOffsets[i] = 0;
+    {
+        while (i >= moveListOffsetsRoot[rootPointer + 1])
+            rootPointer++;
+
+        moveListOffsets[i] = rootPointer;
+    }
 
     int nBlocks;
 
@@ -1242,11 +1261,11 @@ __global__ void perft_bb_gpu_simple_hash(HexaBitBoardPosition *positions, HashKe
     cudaStream_t childStream;
     cudaStreamCreateWithFlags(&childStream, cudaStreamNonBlocking);
 
-    levelCounts[depth] = 1;
-    perftCounters[depth] = perftOut;
+    levelCounts[depth] = count;
+    perftCounters[depth] = (uint64*) prevLevelPerftCounters;
     boardHashes[depth] = prevLevelHashes;
     parentIndices[depth] = NULL;     // no-parent, this is the root
-    boards[depth] = pos;
+    boards[depth] = positions;
     
     int curDepth = 0;
 
@@ -1491,7 +1510,7 @@ __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128
     for (int i = 0; i < nNewBoards; i += NUM_PARALLEL)
     {
         int threads = (nNewBoards - i) < NUM_PARALLEL ? (nNewBoards - i) : NUM_PARALLEL;
-        perft_bb_gpu_simple_hash<<<1, threads, 0, 0>>> (&childBoards[i], &hashes[i], &perfts[i], depth - 1, NULL, ttInfo, false);
+        perft_bb_gpu_simple_hash<<<1, 1, 0, 0>>> (threads, &childBoards[i], &hashes[i], &perfts[i], depth - 1, NULL, ttInfo, false);
         cudaDeviceSynchronize();
         preAllocatedMemoryUsed = base;
     }
@@ -1528,6 +1547,7 @@ __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128
     //  1. calling perft_bb_gpu_simple_hash with threads per block = 4 (and a single block).
     //     - modify the function to pick pos from the array based on threadId.x and make hash a pointer!
     //     - done: ~15-20% gains in performance on GP104!
+    //     - launching single instance (with 4X work) is a bit slower on GP104 ?!??
     // 
     //  2. hash table in this level
     //     - done
