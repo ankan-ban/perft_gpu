@@ -36,8 +36,9 @@
 
 #if USE_TRANSPOSITION_TABLE == 1
 
-// use more 128 bit hashkeys - more reliable for large perft calculations
-#define USE_128_BIT_HASH 1
+// find duplicates in the each level of the parallel breadth first search
+// and make sure we explore them only once
+#define FIND_DUPLICATES_IN_BFS 1
 
 // windows 64 bit vs 32 bit vs linux 64 bit compromise :-/
 // Windows allows overclocking (gives about 10% extra performance)

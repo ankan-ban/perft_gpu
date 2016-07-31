@@ -41,9 +41,9 @@ const bool   sysmem[] = {true, true, false,  false,   false,   true,   true,   t
 //const uint32 ttBits[] = { 0,       0,    25,     29,    26,    26,     26,     27,     25,      0,      0,      0,      0,      0,      0,      0 };
 //const bool   sysmem[] = {true, true,  false,  false,  true,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 26;
-#elif 1
+#elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
-const uint32 ttBits[] = { 0,       0,    25,     27,     26,      26,      25,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
+const uint32 ttBits[] = { 0,       0,    25,     27,     26,      25,      25,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
 const bool   sysmem[] = { true, true, false,  false,   false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
 const int  sharedHashBits = 25;
 
