@@ -799,7 +799,7 @@ __global__ void writeIndexInHashForDuplicates(HashKey128b *hashTable, uint64 has
 {
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (index < nThreads)
+    if (index < nThreads && index <= indexBits)
     {
         HashKey128b hash = hashes[index];
         if (hash.highPart)
@@ -813,15 +813,16 @@ __global__ void writeIndexInHashForDuplicates(HashKey128b *hashTable, uint64 has
     }
 }
 
+template <typename CT>
 __global__ void checkandMarkDuplicates(HashKey128b *hashTable, uint64 hashBits, uint64 indexBits,
                                        HashKey128b *hashes, HexaBitBoardPosition *positions, 
-                                       uint32 *perftCountersCurrentDepth, int *moveCounts, int nThreads)
+                                       CT *perftCountersCurrentDepth, int *moveCounts, int nThreads)
 {
     // exctact one element of work
     uint32 index = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    if (index < nThreads)
+    if (index < nThreads && index < indexBits)
     {
         HashKey128b hash = hashes[index];
 
@@ -921,35 +922,46 @@ __global__ void calcPerftNFromPerftNminus1_hash128b_deep(uint64 *perftNCounters,
         if (hash.highPart)  // hash == 0 means invalid entry - entry for which there was a hash hit
         {
             uint64 *perftNCounter = perftNCounters + indices[index];
-            uint32 perftNminus1 = perftNminus1Counters[index];
+            uint64 perftNminus1 = perftNminus1Counters[index];
 
-            // get perft(N) from perft(N-1)
-            // TODO: try replacing this atomic add with some parallel reduction trick (warp wide?)
-            atomicAdd(perftNCounter, perftNminus1);
-
-            // store in hash table
-            HashEntryPerft128b oldEntry = hashTable[hash.lowPart & indexBits];
-            // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
-            oldEntry.hashKey.highPart ^= oldEntry.perftVal;
-            oldEntry.hashKey.lowPart ^= oldEntry.perftVal;
-            // replace only if old entry was shallower (or of same depth)
-            if (oldEntry.depth <= depth)
+#if FIND_DUPLICATES_IN_BFS == 1
+            if (hash.highPart == ~0ull)
             {
-                HashEntryPerft128b newEntry;
-                newEntry.perftVal = perftNminus1;
-                newEntry.hashKey.highPart = hash.highPart;
-                newEntry.hashKey.lowPart = (hash.lowPart & hashBits);
-                newEntry.depth = depth;
+                // this was a duplicate position and the value stored is actually pointer to the original index
+                perftNminus1 = perftNminus1Counters[perftNminus1];
+                atomicAdd(perftNCounter, perftNminus1);
+            }
+            else
+#endif
+            {
+                // get perft(N) from perft(N-1)
+                // TODO: try replacing this atomic add with some parallel reduction trick (warp wide?)
+                atomicAdd(perftNCounter, perftNminus1);
 
-                // XOR hash part with data part for lockless hashing
-                newEntry.hashKey.lowPart  ^= newEntry.perftVal;
-                newEntry.hashKey.highPart ^= newEntry.perftVal;
+                // store in hash table
+                HashEntryPerft128b oldEntry = hashTable[hash.lowPart & indexBits];
+                // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
+                oldEntry.hashKey.highPart ^= oldEntry.perftVal;
+                oldEntry.hashKey.lowPart ^= oldEntry.perftVal;
+                // replace only if old entry was shallower (or of same depth)
+                if (oldEntry.depth <= depth)
+                {
+                    HashEntryPerft128b newEntry;
+                    newEntry.perftVal = perftNminus1;
+                    newEntry.hashKey.highPart = hash.highPart;
+                    newEntry.hashKey.lowPart = (hash.lowPart & hashBits);
+                    newEntry.depth = depth;
 
-                hashTable[hash.lowPart & indexBits] = newEntry;
+                    // XOR hash part with data part for lockless hashing
+                    newEntry.hashKey.lowPart ^= newEntry.perftVal;
+                    newEntry.hashKey.highPart ^= newEntry.perftVal;
+
+                    hashTable[hash.lowPart & indexBits] = newEntry;
 
 #if PRINT_HASH_STATS == 1
-                atomicAdd(&numStores[depth], 1);
+                    atomicAdd(&numStores[depth], 1);
 #endif
+                }
             }
         }
     }
@@ -1225,6 +1237,8 @@ __global__ void setPreallocatedMemory(void *devMemory)
     preAllocatedMemoryUsed = 0;
 }
 
+__device__ uint32  maxMemoryUsed =  0;
+
 // a simpler gpu perft routine (with hash table support)
 // only a single depth of kernel call nesting
 // assumes that enough memory would be available
@@ -1391,15 +1405,32 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
                                                                 currentLevelCount, curDepth);
             }
 
-#if FIND_DUPLICATES_IN_BFS == 1
-            writeIndexInHashForDuplicates <<<nBlocks, BLOCK_SIZE, 0, childStream>>>
-                                            (hashTable, hashBits[curDepth], indexBits[curDepth], currentLevelHashes, currentLevelCount);
+#if 0
+            // more expensive even for just depth 2
+            if(curDepth == 2)
+            {
+                // using the original hash table is more expensive most likely due to TLB trashing!
+                writeIndexInHashForDuplicates <<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                                (hashTable, hashBits[curDepth], indexBits[curDepth], currentLevelHashes, currentLevelCount);
 
-            checkandMarkDuplicates<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
-                                            (hashTable, hashBits[curDepth], indexBits[curDepth], currentLevelHashes, 
-                                             currentLevelBoards, (uint32*)currentLevelPerftCounters, moveCounts, currentLevelCount);
+                checkandMarkDuplicates<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                                (hashTable, hashBits[curDepth], indexBits[curDepth], currentLevelHashes, 
+                                                 currentLevelBoards, (uint32*)currentLevelPerftCounters, moveCounts, currentLevelCount);
+            }
+            else
 #endif
+#if FIND_DUPLICATES_IN_BFS == 1
+            {
+                // depth 1 hash table is used only for finding duplicates
+                HashKey128b *hashTableForDupes = (HashKey128b *)(hashTables[1]);
+                writeIndexInHashForDuplicates <<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                                (hashTableForDupes, hashBits[1], indexBits[1], currentLevelHashes, currentLevelCount);
 
+                checkandMarkDuplicates<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                                (hashTableForDupes, hashBits[1], indexBits[1], currentLevelHashes,
+                                                 currentLevelBoards, (uint32*) currentLevelPerftCounters, moveCounts, currentLevelCount);
+            }
+#endif
         }
         else
         {
@@ -1412,7 +1443,19 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
                                                                  currentLevelBoards, currentLevelHashes, 
                                                                  moveCounts, (uint64*)currentLevelPerftCounters,
                                                                  currentLevelCount, curDepth);
+#if FIND_DUPLICATES_IN_BFS == 1
+            // depth 1 hash table is used only for finding duplicates
+            HashKey128b *hashTableForDupes = (HashKey128b *)(hashTables[1]);
+            writeIndexInHashForDuplicates <<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                            (hashTableForDupes, hashBits[1], indexBits[1], currentLevelHashes, currentLevelCount);
+
+            checkandMarkDuplicates<<<nBlocks, BLOCK_SIZE, 0, childStream>>>
+                                            (hashTableForDupes, hashBits[1], indexBits[1], currentLevelHashes,
+                                             currentLevelBoards, (uint64*)currentLevelPerftCounters, moveCounts, currentLevelCount);
+#endif
         }
+
+
 
         // do a scan to get new moveListOffsets
         int *pNumSecondLevelMoves = moveCounts + currentLevelCount;     // global memory to hold the sum
@@ -1528,7 +1571,6 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
     cudaStreamDestroy(childStream);
 }
 
-
 __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128b hash, uint64 *perftOut, int depth,
                                            void *devMemory, TTInfo128b ttInfo)
 {
@@ -1584,8 +1626,8 @@ __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128
         nNewBoards++;
     }
 
-    // parallel 4 launches a time
-    // slightly slower on GM107, much faster on GP104
+    // parallel 8 launches a time
+    // good performance gains
 #define NUM_PARALLEL 8
     for (int i = 0; i < nNewBoards; i += NUM_PARALLEL)
     {

@@ -5,7 +5,7 @@
 #include <thread>
 #include <mutex>
 
-// can't make this bigger than 6, as the _simple kernel (breadth first search) gets called directly
+// can't make this bigger than 6/7, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
 #define GPU_LAUNCH_DEPTH 7
 
@@ -19,43 +19,45 @@
 // (disables simple round  robin scheduling - i.e, ENABLE_MULTIPLE_PARALLEL_LAUNCHES when enabled)
 #define PARALLEL_THREAD_GPU_SPLIT 1
 // depth at which work is split among multiple GPUs
-#define SPLIT_DEPTH 10
+#define MIN_SPLIT_DEPTH 9
 
 // launch one level of work serially on GPU
-#define ENABLE_GPU_SERIAL_LEVEL 1
+#define ENABLE_GPU_SERIAL_LEVEL 0
 
 // size of transposition tables for each depth
+// depth1 transposition table has special purpose -> to find duplicates for 'deep' levels during BFS
+// 20 bits ->  1 million entries  (16 MB)
 // 25 bits -> 32  million entries (512 MB)
 // 26 bits -> 64  million ...     (1 GB)
 // 27 bits -> 128 million ...     (2 GB)
 // 28 bits -> 256 million ...     (4 GB)
-//           depth->     0        1      2      3       4       5       6       7       8       9      10      11      12      13      14      15         
+//           depth->        0      1      2      3       4       5       6       7       8       9      10      11      12      13      14      15         
 
-const bool  shallow[] = {true, true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
+const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-#if 0
+#if 1
 // settings for Titan X (12 GB card) + 16 GB sysmem
-const uint32 ttBits[] = {0,       0,    25,     28,     28,      26,     27,     27,     25,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true, false,  false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const uint32 ttBits[] = {0,       22,    25,     26,     27,      26,     26,     26,     26,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 // alternate setting for titan X
-//const uint32 ttBits[] = { 0,       0,    25,     29,    26,    26,     26,     27,     25,      0,      0,      0,      0,      0,      0,      0 };
-//const bool   sysmem[] = {true, true,  false,  false,  true,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+//const uint32 ttBits[] = { 0,      20,    25,     29,    26,    26,     26,     27,     25,      0,      0,      0,      0,      0,      0,      0 };
+//const bool   sysmem[] = {true, false,  false,  false,  true,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 26;
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
-const uint32 ttBits[] = { 0,       0,    25,     27,     26,      25,      25,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
-const bool   sysmem[] = { true, true, false,  false,   false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
-const int  sharedHashBits = 25;
+const uint32 ttBits[] = { 0,       24,    25,     27,     26,      25,      25,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
+const bool   sysmem[] = { true, false, false,  false,   false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
+const int  sharedHashBits = 26;
 
 #elif 0
 // settings for home PC (GTX 970: 4 GB card + 8 GB sysmem)
-const uint32 ttBits[] = {0,       0,    25,     26,     26,     25,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const uint32 ttBits[] = {0,       20,    25,     26,     26,     25,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, false, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 25;
 #else
 // settings for laptop (2 GB card + 16 GB sysmem)
-const uint32 ttBits[] = {0,       0,     25,     27,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, true,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const uint32 ttBits[] = {0,       20,     25,     27,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 27;
 #endif
 const bool sharedsysmem = true;
@@ -112,7 +114,7 @@ void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool s
                 res = cudaHostAlloc(&temp, size, cudaHostAllocMapped | cudaHostAllocWriteCombined /*| cudaHostAllocPortable*/);
                 if (res != cudaSuccess)
                 {
-                    printf("\nFailed to allocate sysmem transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+                    printf("\nFailed to allocate sysmem transposition table for depth %d of %llu bytes, with error: %s\n", depth, size, cudaGetErrorString(res));
                     exit(0);
                 }
                 
@@ -130,7 +132,7 @@ void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool s
         res = cudaMalloc(devPointer, size);
         if (res != cudaSuccess)
         {
-            printf("\nFailed to allocate GPU transposition table of %d bytes, with error: %s\n", size, cudaGetErrorString(res));
+            printf("\nFailed to allocate GPU transposition table of %llu bytes, with error: %s\n", size, cudaGetErrorString(res));
             exit(0);
         }
     }
@@ -153,7 +155,7 @@ void setupHashTables128b(TTInfo128b &tt)
     allocAndClearMem(&sharedTable, &sharedTableCPU, GET_TT_SIZE_FROM_BITS(sharedHashBits) * sizeof(HashEntryPerft128b), sharedsysmem, 9);
 
     memset(&tt, 0, sizeof(tt));
-    for (int i = 2; i < MAX_PERFT_DEPTH; i++)
+    for (int i = 1; i < MAX_PERFT_DEPTH; i++)
     {
         tt.shallowHash[i] = shallow[i];
         uint32 bits = ttBits[i];
@@ -181,7 +183,7 @@ void freeHashTables()
     for (int g = 0; g < numGPUs; g++)
     {
         cudaSetDevice(g);
-        for (int i = 0; i < MAX_PERFT_DEPTH; i++)
+        for (int i = 1; i < MAX_PERFT_DEPTH; i++)
         {
             uint32 bits = ttBits[i];
             if (bits == 0)
@@ -244,7 +246,6 @@ void sortMoves(CMove *moves, int nMoves)
     memcpy(moves, sortedMoves, sizeof(CMove)* nMoves);
 }
 
-
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix);
 
 thread_local int activeGpu = 0;
@@ -263,6 +264,8 @@ volatile eThreadStatus threadStatus[MAX_GPUs];
 
 // main thread -> worker threads
 volatile HexaBitBoardPosition *posForThread[MAX_GPUs];
+volatile char *dispStringForThread[MAX_GPUs];
+
 
 // worker threads -> main thread
 volatile uint64 *perftForThread[MAX_GPUs];
@@ -289,7 +292,7 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
         }
         else if (threadStatus[gpuId] == WORK_SUBMITTED)
         {
-            uint64 perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, "");
+            uint64 perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, (char*)dispStringForThread[gpuId]);
 #if 0
             // Ankan - for testing
             m.lock();
@@ -308,11 +311,12 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
 
 // launch work on multiple threads (each associated with a single GPU), 
 // wait for enough parallel work is done, and only then wait for the threads to finish
-uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth)
+uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
 {
     CMove genMoves[MAX_MOVES];
     HexaBitBoardPosition childPos;
     HexaBitBoardPosition childBoards[MAX_MOVES];
+    char childStrings[MAX_MOVES][128];
     uint64 perftResults[MAX_MOVES];
 
     int nMoves = generateMoves(pos, pos->chance, genMoves);
@@ -332,6 +336,12 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 
     for (int i = 0; i < nMoves; i++)
     {
+
+        char moveString[10];
+        Utils::getCompactMoveString(genMoves[i], moveString);
+        strcpy(childStrings[i], dispPrefix);
+        strcat(childStrings[i], moveString);
+
         childPos = *pos;
         uint64 fakeHash = 0;
 
@@ -343,7 +353,7 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
         childBoards[i] = childPos;
 
         // find an idle worker thread to submit work
-        uint32 chosenThread = -1;
+        int chosenThread = -1;
         while (chosenThread == -1)
         {
             for (int t = 0; t < numGPUs; t++)
@@ -356,6 +366,7 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 
         // submit work on the worker thread
         posForThread[chosenThread] = &childBoards[i];
+        dispStringForThread[chosenThread] = childStrings[i];
         perftForThread[chosenThread] = &perftResults[i];
         threadStatus[chosenThread] = WORK_SUBMITTED;
     }
@@ -373,10 +384,20 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     uint64 count = 0;
     for (int i = 0; i < nMoves; i++)
     {
+        if (depth > DIVIDED_PERFT_DEPTH)
+        {
+            printf("%s   %20llu\n", childStrings[i], perftResults[i]);
+            fflush(stdout);
+        }
+
         count += perftResults[i];
     }
     return count;
 }
+
+int splitDepth = MIN_SPLIT_DEPTH;
+int memoryUsage = 0;
+int dynamicDepth = GPU_LAUNCH_DEPTH;
 
 uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
 {
@@ -411,7 +432,7 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
     uint32 nMoves = 0;
     uint64 count = 0;
 
-    if (depth <= GPU_LAUNCH_DEPTH)
+    if (depth <= dynamicDepth)
     {
         // launch GPU perft routine
         uint64 res;
@@ -432,6 +453,43 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             {
                 perft_bb_gpu_simple_hash << <1, 1 >> > (1, gpuBoard[activeGpu], gpuHashes[activeGpu], gpu_perft[activeGpu], depth, preAllocatedBufferHost[activeGpu],
                     TransTables128b[activeGpu], true);
+
+                // update memory usage estimation
+                int currentMemUsage = 0;
+                cudaError_t s = cudaMemcpyFromSymbol(&currentMemUsage, preAllocatedMemoryUsed, sizeof(int), 0, cudaMemcpyDeviceToHost);
+                
+                // Ankan - for testing
+                /*
+                printf("currentMemUsage : %d, error: %s", currentMemUsage, cudaGetErrorString(s));
+                if (!currentMemUsage)
+                    exit(0);
+                    */
+
+                if (currentMemUsage > memoryUsage)
+                {
+                    memoryUsage = currentMemUsage;
+                }
+                else
+                {
+                    const float alpha = 0.05f;
+                    memoryUsage = (int) (currentMemUsage * alpha + memoryUsage * (1.0f - alpha));
+                }
+
+                // reduce dynamic depth based on memory usage
+#if 0
+                if (memoryUsage > 0.5 * PREALLOCATED_MEMORY_SIZE)
+                {
+                    dynamicDepth--;
+                    printf("new Depth: %d\n", dynamicDepth);
+                    memoryUsage = 0;
+                }
+
+                if (currentMemUsage > PREALLOCATED_MEMORY_SIZE)
+                {
+                    printf("Exceeded memory limit: BAD THINGS WILL HAPPEN!\n");
+                    exit(0);
+                }
+#endif
             }
 
             cudaError_t err = cudaMemcpy(&res, gpu_perft[activeGpu], sizeof(uint64), cudaMemcpyDeviceToHost);
@@ -441,9 +499,9 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
     }
     else
 #if PARALLEL_THREAD_GPU_SPLIT == 1
-    if (depth == SPLIT_DEPTH)
+    if (depth == splitDepth)
     {
-        count = perft_multi_threaded_gpu_launcher(pos, depth);
+        count = perft_multi_threaded_gpu_launcher(pos, depth, dispPrefix);
     }
     else
 #endif
@@ -474,6 +532,18 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             }
             count += childPerft;
         }
+
+#if 0
+        // increase dynamic depth if the tree is too narrow
+        // TODO: 20 is arbitary! - better choose avg no. of child nodes
+        if (memoryUsage * 20 <  PREALLOCATED_MEMORY_SIZE && dynamicDepth < 7)
+        {
+            dynamicDepth++;
+            memoryUsage *= 20;
+            printf("new Depth: %d\n", dynamicDepth);
+        }
+#endif
+
     }
 
     // store in hash table
@@ -553,6 +623,10 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
 void perftLauncher(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
 {
 #if USE_TRANSPOSITION_TABLE == 1
+    // split at the topmost level to get best hash table utilization
+    if (depth > MIN_SPLIT_DEPTH)
+        splitDepth = depth;
+
     dividedPerft(pos, depth);
 #else
     uint64 res;
@@ -612,7 +686,7 @@ void initGPU(int gpu)
     }
     else
     {
-        printf("\nAllocated preAllocatedBuffer of %d bytes, address: %X\n", PREALLOCATED_MEMORY_SIZE, preAllocatedBufferHost[gpu]);
+        printf("\nAllocated preAllocatedBuffer of %llu bytes, address: %X\n", PREALLOCATED_MEMORY_SIZE, preAllocatedBufferHost[gpu]);
     }
 
     cudaMemset(&preAllocatedMemoryUsed, 0, sizeof(uint32));
@@ -652,9 +726,24 @@ int main(int argc, char *argv[])
 {
     BoardPosition testBoard;
 
-    cudaGetDeviceCount(&numGPUs);
+    int totalGPUs;
+    cudaGetDeviceCount(&totalGPUs);
 
-    printf("No of GPUs detected: %d", numGPUs);
+    printf("No of GPUs detected: %d", totalGPUs);
+
+    if (argc >= 4)
+    {
+        numGPUs = atoi(argv[3]);
+        if (numGPUs < 1) 
+            numGPUs = 1;
+        if (numGPUs > totalGPUs) 
+            numGPUs = totalGPUs;
+        printf("\nUsing %d GPUs\n", numGPUs);
+    }
+    else
+    {
+        numGPUs = totalGPUs;
+    }
 
     for (int g = 0; g < numGPUs; g++)
     {
@@ -725,9 +814,9 @@ int main(int argc, char *argv[])
     // for best performance without GPU hash (also set PREALLOCATED_MEMORY_SIZE to 3 x 768MB)
     // launchDepth = 6;    // ankan - test!
 
-    if (argc >= 4)
+    if (argc >= 5)
     {
-        launchDepth = atoi(argv[3]);
+        launchDepth = atoi(argv[4]);
     }
 
     if (maxDepth < launchDepth)
