@@ -1355,6 +1355,21 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
 
     for (curDepth = depth - 1; curDepth > 1; curDepth--)
     {
+#if 1
+        // estimate memory usage and exit early if we think the tree isn't going too fit in memory!
+        uint32 freeMemory = PREALLOCATED_MEMORY_SIZE - preAllocatedMemoryUsed;
+        float branchingFactor = ((float)currentLevelCount) / levelCounts[curDepth + 1];
+        float estMemoryNeededForLevel = ((73.0 + 6.0 * branchingFactor) * currentLevelCount);
+
+        if (estMemoryNeededForLevel * 1.5f > freeMemory)    // 50% margin
+        {
+            // return failure
+            *perfts = ALLSET;
+            cudaDeviceSynchronize();
+            return;
+        }
+#endif
+
         // allocate memory for current level boards, and moveCounts
         deviceMalloc(&currentLevelBoards, currentLevelCount * sizeof (HexaBitBoardPosition));
 
@@ -1406,7 +1421,6 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
             }
 
 #if 1
-            // more expensive even for just depth 2
             if(curDepth == 2)
             {
                 // using the original hash table is more expensive most likely due to TLB trashing!
@@ -1495,13 +1509,6 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
         // moveCounts[] (containing exclusive scan) is used by the below kernel to index into childMoves[] - to know where to put the generated moves
         generate_moves_single_level << <nBlocks, BLOCK_SIZE, 0, childStream >> > (currentLevelBoards, childMoves, moveCounts, currentLevelCount);
 
-#if 0
-        for (int i = 0; i < nextLevelCount; i++)
-        {
-            Utils::displayCompactMove(childMoves[i]);
-        }
-#endif
-
         // go to next level
         currentLevelCount = nextLevelCount;
         prevLevelBoards = currentLevelBoards;
@@ -1511,6 +1518,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
 
     // printf("\nMax Parallel work: %d threads\n", currentLevelCount);
     curDepth++;
+    
     if (curDepth == 2)
     {
         // special case for last level (this should be the most expensive kernel launch by large margin)
@@ -1570,7 +1578,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
 #endif
     cudaStreamDestroy(childStream);
 
-#if 0
+#if 1
     if (newBatch)
     {
         cudaDeviceSynchronize();
@@ -1671,22 +1679,4 @@ __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128
         }
 
     }
-
-    // TRY:
-    //  1. calling perft_bb_gpu_simple_hash with threads per block = 4 (and a single block).
-    //     - modify the function to pick pos from the array based on threadId.x and make hash a pointer!
-    //     - done: ~15-20% gains in performance on GP104!
-    //     - launching single instance (with 4X work) is a bit slower on GP104 ?!??
-    // 
-    //  2. hash table in this level
-    //     - done
-    //
-    //  3. find duplicates in the depth first search using simple hash table mechanism.
-    //      - kernel1: every thread atomically updates hash table location with it's hash + threadId
-    //      - kernel2: every thread reads the hash table again to figure out if it got to update the hash table or somebody else
-    //                 - if somebody else with different hash => not a duplicate
-    //                 - if someone with same hash, but different threadId => duplicate with original result at the threadId => remove.
-    //      - done. ~60% perf improvement!!
-    // 
-    // 4. check max memory used after duplicates are removed, and maybe increase GPU parallel work to 7 levels?
 }

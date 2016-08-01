@@ -35,15 +35,15 @@
 
 const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-#if 0
+#if 1
 // settings for Titan X (12 GB card) + 16 GB sysmem
 const uint32 ttBits[] = {0,       22,    25,     27,     27,      26,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 26;
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
-const uint32 ttBits[] = { 0,       22,    25,     26,     27,      26,      26,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
-const bool   sysmem[] = { true, false, false,  false,   false,   false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
+const uint32 ttBits[] = { 0,       22,    25,     27,     26,     25,     26,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
+const bool   sysmem[] = { true, false, false,  false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
 const int  sharedHashBits = 26;
 
 #elif 0
@@ -290,13 +290,7 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
         else if (threadStatus[gpuId] == WORK_SUBMITTED)
         {
             uint64 perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, (char*)dispStringForThread[gpuId]);
-#if 0
-            // Ankan - for testing
-            criticalSection.lock();
-            Utils::displayBoard(&pos);
-            printf("perft: %llu, gpuId: %d\n", perftVal, gpuId);
-            criticalSection.unlock();
-#endif
+
             if (depth >= DIVIDED_PERFT_DEPTH)
             {
                 criticalSection.lock();
@@ -397,11 +391,23 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 int splitDepth = MIN_SPLIT_DEPTH;
 int maxMemoryUsage = 0;
 
+int numRegularLaunches = 0;
+int numRetryLaunches = 0;
 
 // launch all boards of the last level without waiting for previous work to finish
 // tiny bit improvement in GPU utilization
 uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 {
+    if (depth == GPU_LAUNCH_DEPTH + 1)
+        numRegularLaunches++;
+    else
+        numRetryLaunches++;
+
+    if (depth < GPU_LAUNCH_DEPTH)
+    {
+        printf("Can't even meet depth - 1 ??\n");
+    }
+
     HashKey128b hash = MoveGeneratorBitboard::computeZobristKey128b(pos);
 
     HexaBitBoardPosition childBoards[MAX_MOVES];
@@ -454,7 +460,6 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     {
         perft_bb_gpu_simple_hash <<<1, 1 >>> (1, &gpuBoard[activeGpu][i], &gpuHashes[activeGpu][i], &gpu_perft[activeGpu][i], depth - 1, preAllocatedBufferHost[activeGpu],
                                               TransTables128b[activeGpu], true);
-        //cudaDeviceSynchronize();
     }
 
     // copy device-> host in one go
@@ -476,6 +481,13 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     // collect perft results and update hash table
     for (int i = 0; i < nNewBoards; i++)
     {
+        if (perfts[i] == ALLSET)
+        {
+            // OOM error!
+            // try with lower depth
+            perfts[i] = perft_bb_last_level_launcher(&childBoards[i], depth - 1);
+        }
+
         count += perfts[i];
 
         HashKey128b posHash128b = hashes[i];
@@ -572,6 +584,14 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             }
 
             cudaError_t err = cudaMemcpy(&res, gpu_perft[activeGpu], sizeof(uint64), cudaMemcpyDeviceToHost);
+
+            if (res == ALLSET)
+            {
+                //printf("\nOOM occured. BAD! Exiting\n");
+                //exit(0);
+                res = perft_bb_last_level_launcher(pos, depth);
+
+            }
         }
 
         count = res;
@@ -913,6 +933,8 @@ int main(int argc, char *argv[])
     }
     
     printf("\nMax memory usage: %d bytes\n", maxMemoryUsage);
+    printf("Regular depth %d Launches: %d\n", GPU_LAUNCH_DEPTH, numRegularLaunches);
+    printf("Retry launches: %d\n", numRetryLaunches);
 
     return 0;
 }
