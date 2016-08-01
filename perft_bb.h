@@ -164,7 +164,7 @@ __device__ __forceinline__ void makeMove(HexaBitBoardPosition *pos, CMove move, 
 }
 
 // this one also updates the hash
-__device__ __forceinline__ HashKey128b makeMoveAndUpdateHash(HexaBitBoardPosition *pos, HashKey128b hash, CMove move, int chance)
+CUDA_CALLABLE_MEMBER __forceinline__ HashKey128b makeMoveAndUpdateHash(HexaBitBoardPosition *pos, HashKey128b hash, CMove move, int chance)
 {
 #if USE_TEMPLATE_CHANCE_OPT == 1
     if (chance == BLACK)
@@ -1405,7 +1405,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
                                                                 currentLevelCount, curDepth);
             }
 
-#if 0
+#if 1
             // more expensive even for just depth 2
             if(curDepth == 2)
             {
@@ -1561,14 +1561,21 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
         }
     }
 
-#if 0
+#if 1
     if (preAllocatedMemoryUsed > maxMemoryUsed)
     {
         maxMemoryUsed = preAllocatedMemoryUsed;
-        printf("\nmemory used: %d\n", preAllocatedMemoryUsed);
+        //printf("\nmemory used: %d\n", preAllocatedMemoryUsed);
     }
 #endif
     cudaStreamDestroy(childStream);
+
+#if 0
+    if (newBatch)
+    {
+        cudaDeviceSynchronize();
+    }
+#endif
 }
 
 __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128b hash, uint64 *perftOut, int depth,
