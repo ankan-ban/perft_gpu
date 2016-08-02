@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <thread>
 #include <mutex>
+#include "InfInt.h"
 
 // can't make this bigger than 6/7, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
@@ -37,7 +38,7 @@ const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  fa
 
 #if 1
 // settings for Titan X (12 GB card) + 16 GB sysmem
-const uint32 ttBits[] = {0,       22,    25,     27,     27,      26,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0};
+const uint32 ttBits[] = {0,       24,    25,     27,     27,      27,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 26;
 #elif 0
@@ -243,7 +244,7 @@ void sortMoves(CMove *moves, int nMoves)
     memcpy(moves, sortedMoves, sizeof(CMove)* nMoves);
 }
 
-uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix);
+InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix);
 
 thread_local int activeGpu = 0;
 
@@ -265,7 +266,7 @@ volatile char *dispStringForThread[MAX_GPUs];
 
 
 // worker threads -> main thread
-volatile uint64 *perftForThread[MAX_GPUs];
+volatile InfInt *perftForThread[MAX_GPUs];
 
 std::mutex criticalSection;
 
@@ -289,17 +290,19 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
         }
         else if (threadStatus[gpuId] == WORK_SUBMITTED)
         {
-            uint64 perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, (char*)dispStringForThread[gpuId]);
+            InfInt perftVal = perft_bb_cpu_launcher((HexaBitBoardPosition *)posForThread[gpuId], depth, (char*)dispStringForThread[gpuId]);
 
             if (depth >= DIVIDED_PERFT_DEPTH)
             {
                 criticalSection.lock();
-                printf("%s   %20llu\n", dispStringForThread[gpuId], perftVal);
+                //printf("%s   %20llu\n", dispStringForThread[gpuId], perftVal);
+                printf("%s   %20s\n", dispStringForThread[gpuId], perftVal.toString().c_str());
+
                 fflush(stdout);
                 criticalSection.unlock();
             }
 
-            *(perftForThread[gpuId]) = perftVal;
+            *((InfInt *)perftForThread[gpuId]) = perftVal;
             threadStatus[gpuId] = THREAD_IDLE;
         }
     }
@@ -309,13 +312,13 @@ void worker_thread_start(uint32 depth, uint32 gpuId)
 
 // launch work on multiple threads (each associated with a single GPU), 
 // wait for enough parallel work is done, and only then wait for the threads to finish
-uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
+InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
 {
     CMove genMoves[MAX_MOVES];
     HexaBitBoardPosition childPos;
     HexaBitBoardPosition childBoards[MAX_MOVES];
     char childStrings[MAX_MOVES][128];
-    uint64 perftResults[MAX_MOVES];
+    InfInt perftResults[MAX_MOVES];
 
     int nMoves = generateMoves(pos, pos->chance, genMoves);
     sortMoves(genMoves, nMoves);
@@ -379,7 +382,7 @@ uint64 perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     }
     
 
-    uint64 count = 0;
+    InfInt count = 0;
     for (int i = 0; i < nMoves; i++)
     {
         count += perftResults[i];
@@ -515,7 +518,7 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     return count;
 }
 
-uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
+InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix)
 {
     HexaBitBoardPosition newPositions[MAX_MOVES];
     CMove genMoves[MAX_MOVES];
@@ -546,7 +549,7 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
     }
 
     uint32 nMoves = 0;
-    uint64 count = 0;
+    InfInt count = 0;
 
     if (depth == GPU_LAUNCH_DEPTH+1)
     {
@@ -622,12 +625,13 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             Utils::getCompactMoveString(genMoves[i], moveString);
             strcpy(dispString, dispPrefix);
             strcat(dispString, moveString);
-            uint64 childPerft = perft_bb_cpu_launcher(&newPositions[i], depth - 1, dispString);
+            InfInt childPerft = perft_bb_cpu_launcher(&newPositions[i], depth - 1, dispString);
 
             if (depth > DIVIDED_PERFT_DEPTH)
             {
                 criticalSection.lock();
-                printf("%s   %20llu\n", dispString, childPerft);
+                //printf("%s   %20llu\n", dispString, childPerft);
+                printf("%s   %20s\n", dispString, childPerft.toString().c_str());
                 fflush(stdout);
                 criticalSection.unlock();
             }
@@ -641,7 +645,7 @@ uint64 perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
     if (hashTable && entry.depth <= depth)
     {
         HashEntryPerft128b newEntry;
-        newEntry.perftVal = count;
+        newEntry.perftVal = count.toUnsignedLongLong();
         newEntry.hashKey.highPart = posHash128b.highPart;
         newEntry.hashKey.lowPart = (posHash128b.lowPart & hashBits);
         newEntry.depth = depth;
@@ -689,12 +693,13 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
     cudaSetDevice(0);
 
     printf("\n");
-    uint64 perft;
+    InfInt perft;
     START_TIMER
     perft = perft_bb_cpu_launcher(pos, depth, "..");
     STOP_TIMER
 
-    printf("Perft(%02d):%20llu, time: %8g s\n", depth, perft, gTime);
+    //printf("Perft(%02d):%20llu, time: %8g s\n", depth, perft, gTime);
+    printf("Perft(%02d):%20s, time: %8g s\n", depth, perft.toString().c_str(), gTime);
     fflush(stdout);
 
     for (int i = 0; i < numGPUs; i++)
@@ -818,6 +823,7 @@ uint32 estimateLaunchDepth(HexaBitBoardPosition *pos)
 
 int main(int argc, char *argv[])
 {
+
     BoardPosition testBoard;
 
     int totalGPUs;

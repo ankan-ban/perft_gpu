@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="chess.h" />
+    <ClInclude Include="InfInt.h" />
     <ClInclude Include="MoveGeneratorBitboard.h" />
     <ClInclude Include="perft_bb.h" />
     <ClInclude Include="switches.h" />

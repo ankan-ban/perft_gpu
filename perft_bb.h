@@ -1361,7 +1361,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
         float branchingFactor = ((float)currentLevelCount) / levelCounts[curDepth + 1];
         float estMemoryNeededForLevel = ((73.0 + 6.0 * branchingFactor) * currentLevelCount);
 
-        if (estMemoryNeededForLevel * 1.5f > freeMemory)    // 50% margin
+        if (estMemoryNeededForLevel * 1.2f > freeMemory)    // 20% margin
         {
             // return failure
             *perfts = ALLSET;
@@ -1420,7 +1420,8 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
                                                                 currentLevelCount, curDepth);
             }
 
-#if 1
+#if 0
+            // TODO: CAREFUL! using the same hash table won't work with our early return in case of OOM condition below!!
             if(curDepth == 2)
             {
                 // using the original hash table is more expensive most likely due to TLB trashing!
@@ -1496,6 +1497,16 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
 
         // and  indices to current level boards
         deviceMalloc(&moveListOffsets, sizeof(int)* nextLevelCount);
+
+#if 1
+        // exit with failure if we are going to exceed allocated memory!
+        if(preAllocatedMemoryUsed > PREALLOCATED_MEMORY_SIZE)
+        {
+            // return failure
+            *perfts = ALLSET;
+            return;
+        }
+#endif
 
         // Generate secondToFirstLevelIndices by running interval expand
         // 
@@ -1578,12 +1589,10 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
 #endif
     cudaStreamDestroy(childStream);
 
-#if 1
     if (newBatch)
     {
         cudaDeviceSynchronize();
     }
-#endif
 }
 
 __global__ void perft_bb_gpu_launcher_hash(HexaBitBoardPosition *pos, HashKey128b hash, uint64 *perftOut, int depth,

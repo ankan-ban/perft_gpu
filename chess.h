@@ -491,36 +491,6 @@ struct HashEntryPerft128b
 // TODO: check if it can cause problem with 128 bit atomic read/writes?
 CT_ASSERT(sizeof(HashEntryPerft128b) == 24);
 
-/** Declarations for class/methods in Util.cpp **/
-
-// utility functions for reading FEN String, EPD file, displaying board, etc
-
-/*
-   Three kinds of board representations are used with varying degrees of readibility and efficiency
-
-   1. Human readable board (EPD file?)
- 
-	  e.g. for Starting Position:
-
-	  rnbqkbnr
-	  pppppppp
-	  ........
-	  ........
-	  ........
-	  ........
-	  PPPPPPPP
-	  RNBQKBNR
-
-  2. FEN string board e.g: 
-     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-
-  3. 0x88 binary board described at the begining of this file
-
-  The first two fromats are only used for displaying/taking input and interacting with the UCI protocol
-  For all other purposes the 0x88 board is used
-
-*/
-
 #include "utils.h"
 
 #endif
