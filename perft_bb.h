@@ -698,7 +698,7 @@ __global__ void makemove_and_count_moves_single_level_hash128b(HexaBitBoardPosit
 #endif
         // check in transposition table
         HashKey128b entry = hashTable[hash.lowPart & indexBits];
-        //entry.highPart = entry.highPart ^ entry.lowPart;
+        entry.highPart = entry.highPart ^ entry.lowPart;
         if ((entry.highPart == hash.highPart) && ((entry.lowPart & hashBits) == (hash.lowPart & hashBits)))
         {
             uint32 perftFromHash = (entry.lowPart & indexBits);
@@ -895,7 +895,7 @@ __global__ void calcPerftNFromPerftNminus1_hash128b(PT *perftNCounters, int *ind
                 // store in hash table
                 // it's assumed that perft value will fit in remaining (~hashMask) bits
                 HashKey128b hashEntry = HashKey128b((hash.lowPart  & hashBits) | perftNminus1, hash.highPart);
-                // hashEntry.highPart ^= hashEntry.lowPart;
+                hashEntry.highPart ^= hashEntry.lowPart;
                 hashTable[hash.lowPart & indexBits] = hashEntry;
 
 #if PRINT_HASH_STATS == 1

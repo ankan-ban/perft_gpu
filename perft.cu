@@ -43,7 +43,7 @@ const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   
 const int  sharedHashBits = 26;
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
-const uint32 ttBits[] = { 0,       22,    25,     27,     26,     25,     26,     26,      0,      0,      0,      0,      0,      0,      0,      0 };
+const uint32 ttBits[] = { 0,       23,    25,     27,     26,     25,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0 };
 const bool   sysmem[] = { true, false, false,  false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
 const int  sharedHashBits = 26;
 
@@ -401,16 +401,6 @@ int numRetryLaunches = 0;
 // tiny bit improvement in GPU utilization
 uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 {
-    if (depth == GPU_LAUNCH_DEPTH + 1)
-        numRegularLaunches++;
-    else
-        numRetryLaunches++;
-
-    if (depth < GPU_LAUNCH_DEPTH)
-    {
-        printf("Can't even meet depth - 1 ??\n");
-    }
-
     HashKey128b hash = MoveGeneratorBitboard::computeZobristKey128b(pos);
 
     HexaBitBoardPosition childBoards[MAX_MOVES];
@@ -451,6 +441,17 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
         hashes[nNewBoards] = newHash;
         nNewBoards++;
+    }
+
+    // count no. of launches
+    if (depth == GPU_LAUNCH_DEPTH + 1)
+        numRegularLaunches += nNewBoards;
+    else
+        numRetryLaunches += nNewBoards;
+
+    if (depth < GPU_LAUNCH_DEPTH)
+    {
+        printf("Can't even meet depth - 1 ??\n");
     }
 
     // copy host->device in one go
