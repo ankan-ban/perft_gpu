@@ -982,8 +982,8 @@ CUDA_CALLABLE_MEMBER CPU_FORCE_INLINE static uint64 multiKnightAttacks(uint64 kn
     static void init()
     {
         // initialize zobrist keys
-        memcpy(&zob, randoms, sizeof(zob));
-        memcpy(&zob2, &randoms[1000], sizeof(zob2));
+        memcpy(&zob, &randoms[1200], sizeof(zob));
+        memcpy(&zob2, &randoms[333], sizeof(zob2));
 
         // initialize the empty board attack tables
         for (uint8 i=0; i < 64; i++)

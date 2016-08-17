@@ -6,6 +6,13 @@
 #include <mutex>
 #include "InfInt.h"
 
+// read set of positions and occurence counts from a file, compute perfts and sum them up
+#define PERFT_RECORDS_MODE 0
+
+// the set of positions are in a text file (with FEN and occurence counts)
+// default is binary file
+#define PERFT_RECORD_TEXT_MODE 0
+
 // can't make this bigger than 6/7, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
 #define GPU_LAUNCH_DEPTH 7
@@ -13,11 +20,7 @@
 // print divided perft values (subtotals) after reaching this depth
 #define DIVIDED_PERFT_DEPTH 10
 
-// try launching multiple GPU kenerls in  parallel (on multiple GPUs)
-#define ENABLE_MULTIPLE_PARALLEL_LAUNCHES 0
-
 // use multiple CPU threads to split the tree at greater depth 
-// (disables simple round  robin scheduling - i.e, ENABLE_MULTIPLE_PARALLEL_LAUNCHES when enabled)
 #define PARALLEL_THREAD_GPU_SPLIT 1
 // depth at which work is split among multiple GPUs
 #define MIN_SPLIT_DEPTH 9
@@ -37,13 +40,13 @@
 const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
 #if 1
-// settings for Titan X (12 GB card) + 16 GB sysmem
-const uint32 ttBits[] = {0,       24,    25,     27,     27,      27,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0};
+// settings for Titan X (12 GB card) + 32 GB sysmem
+const uint32 ttBits[] = {0,       24,    25,     27,     27,      27,     27,     28,     28,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-const int  sharedHashBits = 26;
+const int  sharedHashBits = 27;
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
-const uint32 ttBits[] = { 0,       23,    25,     27,     26,     25,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0 };
+const uint32 ttBits[] = { 0,       23,    25,     26,     26,     26,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0 };
 const bool   sysmem[] = { true, false, false,  false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
 const int  sharedHashBits = 26;
 
@@ -54,9 +57,9 @@ const bool   sysmem[] = {true, false, false,  false,   true,   true,   true,   t
 const int  sharedHashBits = 25;
 #else
 // settings for laptop (2 GB card + 16 GB sysmem)
-const uint32 ttBits[] = {0,       22,     25,     27,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0};
+const uint32 ttBits[] = {0,       22,     25,     27,     27,     26,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-const int  sharedHashBits = 27;
+const int  sharedHashBits = 20;
 #endif
 const bool sharedsysmem = true;
 
@@ -822,8 +825,144 @@ uint32 estimateLaunchDepth(HexaBitBoardPosition *pos)
     return depth;
 }
 
+void removeNewLine(char *str)
+{
+    while (*str)
+    {
+        if (*str == '\n' || *str == '\r')
+        {
+            *str = 0;
+            break;
+        }
+        str++;
+    }
+}
+
+void processPerftRecords(int argc, char *argv[])
+{
+    int depth = 7;
+
+    FILE *fpInp;    // input file
+    FILE *fpOp;     // output file
+
+    int i = 0;
+    if (argc != 3)
+    {
+        printf("usage: perft14_verif <inFile> [gpu]\n");
+        return;
+    }
+    int g = atoi(argv[2]);
+    initGPU(g);
+    setupHashTables128b(TransTables128b[g]);
+    MoveGeneratorBitboard::init();
+
+    char opFile[1024];
+    sprintf(opFile, "%s.op", argv[1]);
+    printf("filename of op: %s", opFile);
+
+    fpInp = fopen(argv[1], "rb+");
+    fpOp = fopen(opFile, "ab+");
+
+    fseek(fpOp, 0, SEEK_SET);
+
+    BoardPosition testBoard;
+
+    cudaMalloc(&gpuBoard[g], sizeof(HexaBitBoardPosition) * MAX_MOVES);
+    cudaMalloc(&gpu_perft[g], sizeof(uint64) * MAX_MOVES);
+    cudaMalloc(&gpuHashes[g], sizeof(HashKey128b)*MAX_MOVES);
+
+    clock_t start, end;
+    start = clock();
+
+    char line[1024];
+    int j = 0;
+    while (fgets(line, 1024, fpInp))
+    {
+#if 0
+        if (_kbhit())
+        {
+            printf("\nPaused.. press any key to continue.\n");
+            getch();
+        }
+#endif
+        i++;
+        if (fgets(opFile, 1024, fpOp))
+        {
+            // skip already processed records
+            continue;
+        }
+
+        Utils::readFENString(line, &testBoard);
+        HexaBitBoardPosition testBB;
+
+        //Utils::dispBoard(&testBoard);
+        printf("\n%s", line);
+
+        Utils::board088ToHexBB(&testBB, &testBoard);
+
+        HashKey128b posHash128b;
+        posHash128b = MoveGeneratorBitboard::computeZobristKey128b(&testBB);
+
+        cudaMemcpy(gpuBoard[g], &testBB, sizeof(HexaBitBoardPosition), cudaMemcpyHostToDevice);
+        cudaMemset(gpu_perft[g], 0, sizeof(uint64));
+        cudaMemcpy(gpuHashes[g], &posHash128b, sizeof(HashKey128b), cudaMemcpyHostToDevice);
+
+        perft_bb_gpu_simple_hash <<<1, 1 >>> (1, gpuBoard[g], gpuHashes[g], gpu_perft[g], depth, preAllocatedBufferHost[g], TransTables128b[g], true);
+
+
+        uint64 res;
+        cudaError_t err = cudaMemcpy(&res, gpu_perft[g], sizeof(uint64), cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess)
+        {
+            printf("cudaMemcpyDeviceToHost returned %s\n", cudaGetErrorString(err));
+            exit(0);
+        }
+
+        if (res == ALLSET)
+        {
+            res = perft_bb_last_level_launcher(&testBB, depth);
+        }
+        printf("GPU Perft %d: %llu", depth, res);
+        // write to output file
+        removeNewLine(line);
+
+        // parse the occurence count (last number in the line)
+        char *ptr = line;
+        while (*ptr) ptr++;
+        while (*ptr != ' ') ptr--;
+        int occCount = atoi(ptr);
+
+        fprintf(fpOp, "%s %llu %llu\n", line, res, res * occCount);
+        fflush(fpOp);
+
+        end = clock();
+        double t = ((double)end - start) / CLOCKS_PER_SEC;
+        j++;
+        printf("\nRecords done: %d, Total: %g seconds, Avg: %g seconds\n", i, t, t / j);
+        fflush(stdout);
+    }
+
+
+    cudaFree(gpuBoard);
+    cudaFree(gpu_perft);
+
+
+    fclose(fpInp);
+    fclose(fpOp);
+
+    cudaDeviceReset();
+
+    printf("Retry launches: %d\n", numRetryLaunches);
+}
+
+
+
 int main(int argc, char *argv[])
 {
+#if PERFT_RECORDS_MODE == 1
+    processPerftRecords(argc, argv);
+    return 0;
+#endif
 
     BoardPosition testBoard;
 
