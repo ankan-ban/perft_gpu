@@ -15,7 +15,13 @@
 
 // can't make this bigger than 6/7, as the _simple kernel (breadth first search) gets called directly
 // breadth first search uses lot of memory and can can't hold bigger tree 
-#define GPU_LAUNCH_DEPTH 7
+#define GPU_LAUNCH_DEPTH 6
+
+// launch all boards at last level in a single kernel launch 
+// enable this with GPU_LAUNCH_DEPTH 6
+//  - allows better use of CPU side hash, but maybe slightly less GPU utilization
+// TODO: there is some bug with this mode (wrong perft 9 result), debug and fix!
+#define SINGLE_LAUNCH_FOR_LAST_LEVEL 0
 
 // print divided perft values (subtotals) after reaching this depth
 #define DIVIDED_PERFT_DEPTH 10
@@ -39,7 +45,7 @@
 
 const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-#if 1
+#if 0
 // settings for Titan X (12 GB card) + 32 GB sysmem
 const uint32 ttBits[] = {0,       24,    25,     27,     27,      27,     27,     28,     28,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
@@ -63,6 +69,21 @@ const int  sharedHashBits = 20;
 #endif
 const bool sharedsysmem = true;
 
+// use a hash table to store *all* positions at depth 7/8, etc
+#define USE_COMPLETE_TT_AT_LAST_CPU_LEVEL 1
+
+// 16 million entries for the main hash table part
+#define COMPLETE_TT_BITS 24
+
+#define COMPLETE_TT_INDEX_BITS GET_TT_INDEX_BITS(COMPLETE_TT_BITS)
+
+// 128 million entries (for chained part)
+#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 128*1024*1024
+
+CompleteHashEntry *completeTT;
+CompleteHashEntry *chainMemory;
+uint32 chainIndex = 0;
+
 int numGPUs = 0;
 
 #if USE_TRANSPOSITION_TABLE == 1
@@ -79,6 +100,15 @@ bool sysmemTablesAllocated = false;
 
 void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool sysmem, int depth)
 {
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
+    if (depth == GPU_LAUNCH_DEPTH)
+    {
+        // no need of this level's hash table
+        *devPointer = NULL;
+        *hostPointer = NULL;
+        return;
+    }
+#endif
     cudaError_t res;
     void *temp = NULL;
     *devPointer = NULL;
@@ -176,10 +206,23 @@ void setupHashTables128b(TTInfo128b &tt)
     }
 
     sysmemTablesAllocated = true;
+
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
+    completeTT = (CompleteHashEntry *) malloc(GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+    memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+    chainMemory = (CompleteHashEntry *)malloc(COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+    memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+#endif
 }
 
 void freeHashTables()
 {
+    if (completeTT)
+        free(completeTT);
+
+    if (chainMemory)
+        free(chainMemory);
+
     bool sharedDeleted = false;
     for (int g = 0; g < numGPUs; g++)
     {
@@ -201,9 +244,14 @@ void freeHashTables()
                 if (g == 0)
                 {
                     if (i >= GPU_LAUNCH_DEPTH)
-                        free(TransTables128b[g].cpuTable[i]);
+                    {
+                        if (TransTables128b[g].cpuTable[i])
+                            free(TransTables128b[g].cpuTable[i]);
+                    }
                     else
+                    {
                         cudaFree(TransTables128b[g].hashTable[i]);
+                    }
                 }
             }
             else
@@ -326,6 +374,23 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     int nMoves = generateMoves(pos, pos->chance, genMoves);
     sortMoves(genMoves, nMoves);
 
+#if 0
+    // Ankan - HACK: get e4, d4 on the top of the list
+    int e4Index = 0;
+    while(1)
+    {
+        if (genMoves[e4Index].getTo() == E4)
+            break;
+        e4Index++;
+    }
+    for (int i = e4Index; i >= 2; i--)
+    {
+        genMoves[i] = genMoves[i - 2];
+    }
+    genMoves[0] = CMove(E2, E4, CM_FLAG_DOUBLE_PAWN_PUSH);
+    genMoves[1] = CMove(D2, D4, CM_FLAG_DOUBLE_PAWN_PUSH);
+#endif
+
     std::thread threads[MAX_GPUs];
     // Launch a thread for each GPU
     for (int i = 0; i < numGPUs; ++i)
@@ -416,9 +481,13 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     int nMoves = generateMoves(pos, color, moves);
     sortMoves(moves, nMoves);
  
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL != 1
     HashEntryPerft128b *hashTable = (HashEntryPerft128b *)TransTables128b[0].cpuTable[depth - 1];
     uint64 indexBits = TransTables128b[0].indexBits[depth - 1];
     uint64 hashBits = TransTables128b[0].hashBits[depth - 1];
+#else
+    CompleteHashEntry *newEntryPointer[MAX_MOVES];
+#endif
 
     int nNewBoards = 0;
     uint64 count = 0;
@@ -428,6 +497,51 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
         HashKey128b newHash = makeMoveAndUpdateHash(&childBoards[nNewBoards], hash, moves[i], color);
 
         // check in hash table
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
+
+        CompleteHashEntry *entryPtr = NULL; // new entry to update in case of hash miss
+        CompleteHashEntry *entry;
+
+        criticalSection.lock();
+        entry = &completeTT[newHash.lowPart & COMPLETE_TT_INDEX_BITS];
+        while (1)
+        {
+            if (entry->hashHigh == 0 && entry->hashLow == 0)
+            {
+                // blank record
+
+                // mark in-use (so that other parallel thread doesn't overwrite it)
+                // with this approach there is a (very!) small chance that duplicate entries might get added for the same position.
+                //  ... but it should always be correct.
+                entry->hashHigh = ~0;
+                entry->hashLow = ALLSET;
+                entry->next = ~0;
+
+                entryPtr = entry;
+                break;
+            }
+            if (entry->hashHigh == (newHash.highPart & 0xFFFFFFFF) && entry->hashLow == newHash.lowPart)
+            {
+                // hash hit
+                count += entry->perft;
+                break;
+            }
+
+            if (entry->next == ~0)
+            {
+                entry->next = chainIndex++;
+            }
+            entry = &chainMemory[entry->next];
+        }
+        criticalSection.unlock();
+
+        if (entryPtr == NULL)
+        {
+            continue;
+        }
+
+        newEntryPointer[nNewBoards] = entryPtr;
+#else
         HashEntryPerft128b entry;
         entry = hashTable[newHash.lowPart & indexBits];
         // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
@@ -441,7 +555,7 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
             count += entry.perftVal;
             continue;
         }
-
+#endif
         hashes[nNewBoards] = newHash;
         nNewBoards++;
     }
@@ -462,12 +576,17 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     cudaMemset(gpu_perft[activeGpu], 0, sizeof(uint64)*nNewBoards);
     cudaMemcpy(gpuHashes[activeGpu], hashes, sizeof(HashKey128b)*nNewBoards, cudaMemcpyHostToDevice);
 
+#if SINGLE_LAUNCH_FOR_LAST_LEVEL == 1
+    perft_bb_gpu_simple_hash <<<1, 1 >>> (nNewBoards, gpuBoard[activeGpu], gpuHashes[activeGpu], gpu_perft[activeGpu], depth - 1, preAllocatedBufferHost[activeGpu],
+                                          TransTables128b[activeGpu], true);
+#else
     // hope that these will get scheduled on GPU in tightly packed manner without much overhead
     for (int i = 0; i < nNewBoards; i++)
     {
         perft_bb_gpu_simple_hash <<<1, 1 >>> (1, &gpuBoard[activeGpu][i], &gpuHashes[activeGpu][i], &gpu_perft[activeGpu][i], depth - 1, preAllocatedBufferHost[activeGpu],
                                               TransTables128b[activeGpu], true);
     }
+#endif
 
     // copy device-> host in one go
     cudaError_t err = cudaMemcpy(perfts, gpu_perft[activeGpu], sizeof(uint64) * nNewBoards, cudaMemcpyDeviceToHost);
@@ -488,7 +607,11 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     // collect perft results and update hash table
     for (int i = 0; i < nNewBoards; i++)
     {
+#if SINGLE_LAUNCH_FOR_LAST_LEVEL == 1
+        if (perfts[0] == ALLSET)
+#else
         if (perfts[i] == ALLSET)
+#endif
         {
             // OOM error!
             // try with lower depth
@@ -499,6 +622,11 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
         HashKey128b posHash128b = hashes[i];
 
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
+        newEntryPointer[i]->hashLow = hashes[i].lowPart;
+        newEntryPointer[i]->hashHigh = (uint32) hashes[i].highPart;
+        newEntryPointer[i]->perft = perfts[i];
+#else
         HashEntryPerft128b oldEntry;
         oldEntry = hashTable[posHash128b.lowPart & indexBits];
 
@@ -517,6 +645,7 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
             hashTable[posHash128b.lowPart & indexBits] = newEntry;
         }
+#endif
     }
 
     return count;
@@ -646,7 +775,7 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 
     // store in hash table
     // replace only if old entry was shallower (or of same depth)
-    if (hashTable && entry.depth <= depth)
+    if (hashTable && (entry.depth <= depth) && (count < InfInt(ALLSET)))
     {
         HashEntryPerft128b newEntry;
         newEntry.perftVal = count.toUnsignedLongLong();
@@ -667,6 +796,10 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 // called only for bigger perfts - shows move count distribution for each move
 void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
 {
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
+    memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+    memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+#endif
     cudaError_t cudaStatus;
 
     for (int i = 0; i < numGPUs; i++)

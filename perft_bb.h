@@ -1364,7 +1364,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
         if (estMemoryNeededForLevel * 1.2f > freeMemory)    // 20% margin
         {
             // return failure
-            *perfts = ALLSET;
+            perfts[0] = ALLSET;
             cudaDeviceSynchronize();
             return;
         }
@@ -1503,7 +1503,7 @@ __global__ void perft_bb_gpu_simple_hash(int count, HexaBitBoardPosition *positi
         if(preAllocatedMemoryUsed > PREALLOCATED_MEMORY_SIZE)
         {
             // return failure
-            *perfts = ALLSET;
+            perfts[0] = ALLSET;
             return;
         }
 #endif
