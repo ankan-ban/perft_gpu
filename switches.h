@@ -13,7 +13,7 @@
 
 // 768 MB preallocated memory size (for holding the perft tree in GPU memory)
 // on systems with more video memory (like Titan X), we can use 3x of this to hold bigger trees
-#define PREALLOCATED_MEMORY_SIZE (1 * 768 * 1024 * 1024ull)
+#define PREALLOCATED_MEMORY_SIZE (768 * 1024 * 1024ull)
 //#define PREALLOCATED_MEMORY_SIZE (1800 * 1024 * 1024ull)
 
 // 512 KB ought to be enough for holding the stack for the serial part of the gpu perft

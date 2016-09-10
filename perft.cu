@@ -20,8 +20,7 @@
 // launch all boards at last level in a single kernel launch 
 // enable this with GPU_LAUNCH_DEPTH 6
 //  - allows better use of CPU side hash, but maybe slightly less GPU utilization
-// TODO: there is some bug with this mode (wrong perft 9 result), debug and fix!
-#define SINGLE_LAUNCH_FOR_LAST_LEVEL 0
+#define SINGLE_LAUNCH_FOR_LAST_LEVEL 1
 
 // print divided perft values (subtotals) after reaching this depth
 #define DIVIDED_PERFT_DEPTH 10
@@ -374,23 +373,6 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     int nMoves = generateMoves(pos, pos->chance, genMoves);
     sortMoves(genMoves, nMoves);
 
-#if 0
-    // Ankan - HACK: get e4, d4 on the top of the list
-    int e4Index = 0;
-    while(1)
-    {
-        if (genMoves[e4Index].getTo() == E4)
-            break;
-        e4Index++;
-    }
-    for (int i = e4Index; i >= 2; i--)
-    {
-        genMoves[i] = genMoves[i - 2];
-    }
-    genMoves[0] = CMove(E2, E4, CM_FLAG_DOUBLE_PAWN_PUSH);
-    genMoves[1] = CMove(D2, D4, CM_FLAG_DOUBLE_PAWN_PUSH);
-#endif
-
     std::thread threads[MAX_GPUs];
     // Launch a thread for each GPU
     for (int i = 0; i < numGPUs; ++i)
@@ -481,11 +463,10 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     int nMoves = generateMoves(pos, color, moves);
     sortMoves(moves, nMoves);
  
-#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL != 1
     HashEntryPerft128b *hashTable = (HashEntryPerft128b *)TransTables128b[0].cpuTable[depth - 1];
     uint64 indexBits = TransTables128b[0].indexBits[depth - 1];
     uint64 hashBits = TransTables128b[0].hashBits[depth - 1];
-#else
+#if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
     CompleteHashEntry *newEntryPointer[MAX_MOVES];
 #endif
 
@@ -498,64 +479,73 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
         // check in hash table
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
-
-        CompleteHashEntry *entryPtr = NULL; // new entry to update in case of hash miss
-        CompleteHashEntry *entry;
-
-        criticalSection.lock();
-        entry = &completeTT[newHash.lowPart & COMPLETE_TT_INDEX_BITS];
-        while (1)
+        if (depth == GPU_LAUNCH_DEPTH + 1)
         {
-            if (entry->hashHigh == 0 && entry->hashLow == 0)
+            CompleteHashEntry *entryPtr = NULL; // new entry to update in case of hash miss
+            CompleteHashEntry *entry;
+
+            criticalSection.lock();
+            entry = &completeTT[newHash.lowPart & COMPLETE_TT_INDEX_BITS];
+            while (1)
             {
-                // blank record
+                if (entry->hashHigh == 0 && entry->hashLow == 0)
+                {
+                    // blank record
 
-                // mark in-use (so that other parallel thread doesn't overwrite it)
-                // with this approach there is a (very!) small chance that duplicate entries might get added for the same position.
-                //  ... but it should always be correct.
-                entry->hashHigh = ~0;
-                entry->hashLow = ALLSET;
-                entry->next = ~0;
+                    // mark in-use (so that other parallel thread doesn't overwrite it)
+                    // with this approach there is a (very!) small chance that duplicate entries might get added for the same position.
+                    //  ... but it should always be correct.
+                    entry->hashHigh = ~0;
+                    entry->hashLow = ALLSET;
+                    entry->next = ~0;
 
-                entryPtr = entry;
-                break;
+                    entryPtr = entry;
+                    break;
+                }
+                if (entry->hashHigh == (newHash.highPart & 0xFFFFFFFF) && entry->hashLow == newHash.lowPart)
+                {
+                    // hash hit
+                    count += entry->perft;
+                    break;
+                }
+
+                if (entry->next == ~0)
+                {
+                    entry->next = chainIndex++;
+                    if (chainIndex > COMPLETE_HASH_CHAIN_ALLOC_SIZE)
+                    {
+                        printf("\nRan out of complete hash table!\n");
+                        exit(0);
+                    }
+                }
+                entry = &chainMemory[entry->next];
             }
-            if (entry->hashHigh == (newHash.highPart & 0xFFFFFFFF) && entry->hashLow == newHash.lowPart)
+            criticalSection.unlock();
+
+            if (entryPtr == NULL)
+            {
+                continue;
+            }
+
+            newEntryPointer[nNewBoards] = entryPtr;
+        }
+        else
+#endif
+        {
+            HashEntryPerft128b entry;
+            entry = hashTable[newHash.lowPart & indexBits];
+            // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
+            entry.hashKey.highPart ^= entry.perftVal;
+            entry.hashKey.lowPart ^= entry.perftVal;
+
+            if ((entry.hashKey.highPart == newHash.highPart) && ((entry.hashKey.lowPart & hashBits) == (newHash.lowPart & hashBits))
+                && (entry.depth == (depth - 1)))
             {
                 // hash hit
-                count += entry->perft;
-                break;
+                count += entry.perftVal;
+                continue;
             }
-
-            if (entry->next == ~0)
-            {
-                entry->next = chainIndex++;
-            }
-            entry = &chainMemory[entry->next];
         }
-        criticalSection.unlock();
-
-        if (entryPtr == NULL)
-        {
-            continue;
-        }
-
-        newEntryPointer[nNewBoards] = entryPtr;
-#else
-        HashEntryPerft128b entry;
-        entry = hashTable[newHash.lowPart & indexBits];
-        // extract data from the entry using XORs (hash part is stored XOR'ed with data for lockless hashing scheme)
-        entry.hashKey.highPart ^= entry.perftVal;
-        entry.hashKey.lowPart ^= entry.perftVal;
-
-        if ((entry.hashKey.highPart == newHash.highPart) && ((entry.hashKey.lowPart & hashBits) == (newHash.lowPart & hashBits))
-            && (entry.depth == (depth - 1)))
-        {
-            // hash hit
-            count += entry.perftVal;
-            continue;
-        }
-#endif
         hashes[nNewBoards] = newHash;
         nNewBoards++;
     }
@@ -577,8 +567,55 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     cudaMemcpy(gpuHashes[activeGpu], hashes, sizeof(HashKey128b)*nNewBoards, cudaMemcpyHostToDevice);
 
 #if SINGLE_LAUNCH_FOR_LAST_LEVEL == 1
-    perft_bb_gpu_simple_hash <<<1, 1 >>> (nNewBoards, gpuBoard[activeGpu], gpuHashes[activeGpu], gpu_perft[activeGpu], depth - 1, preAllocatedBufferHost[activeGpu],
-                                          TransTables128b[activeGpu], true);
+    int batchSize = nNewBoards;
+    memset(perfts, 0xFF, sizeof(uint64)*nNewBoards);
+    while(1)
+    {
+        bool done = true;
+
+        for (int i = 0; i < nNewBoards;)
+        {
+            if (perfts[i] == ALLSET)
+            {
+                int count = ((nNewBoards - i) > batchSize) ? batchSize : nNewBoards - i;
+
+                // skip the ones already computed
+                while (perfts[i + count - 1] != ALLSET) count--;
+
+                if (batchSize != nNewBoards)
+                    numRetryLaunches++;
+
+                perft_bb_gpu_simple_hash << <1, 1 >> > (count, &gpuBoard[activeGpu][i], &gpuHashes[activeGpu][i], &gpu_perft[activeGpu][i], depth - 1, preAllocatedBufferHost[activeGpu],
+                                                        TransTables128b[activeGpu], true);
+
+                cudaError_t err = cudaMemcpy(&perfts[i], &gpu_perft[activeGpu][i], sizeof(uint64) * count, cudaMemcpyDeviceToHost);
+
+                if (perfts[i] == ALLSET)
+                {
+                    done = false;
+                    for (int j = 0; j < count; j++)
+                        perfts[i + j] = ALLSET;
+
+                    cudaMemset(&gpu_perft[activeGpu][i], 0, sizeof(uint64) * count);
+                }
+                i += count;
+            }
+            else
+            {
+                i++;
+            }
+        }
+        if (done)
+            break;
+
+        // some bug here??!!!
+        if (batchSize == 1)
+        {
+            printf("\nCan't even fit a single launch! Exiting\n");
+            exit(0);
+        }
+        batchSize = (batchSize + 3) / 4;
+    }
 #else
     // hope that these will get scheduled on GPU in tightly packed manner without much overhead
     for (int i = 0; i < nNewBoards; i++)
@@ -586,7 +623,6 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
         perft_bb_gpu_simple_hash <<<1, 1 >>> (1, &gpuBoard[activeGpu][i], &gpuHashes[activeGpu][i], &gpu_perft[activeGpu][i], depth - 1, preAllocatedBufferHost[activeGpu],
                                               TransTables128b[activeGpu], true);
     }
-#endif
 
     // copy device-> host in one go
     cudaError_t err = cudaMemcpy(perfts, gpu_perft[activeGpu], sizeof(uint64) * nNewBoards, cudaMemcpyDeviceToHost);
@@ -594,6 +630,8 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     {
         printf("\nGot error: %s\n", cudaGetErrorString(err));
     }
+#endif
+
 
     // update memory usage estimation
     int currentMemUsage = 0;
@@ -607,12 +645,12 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     // collect perft results and update hash table
     for (int i = 0; i < nNewBoards; i++)
     {
-#if SINGLE_LAUNCH_FOR_LAST_LEVEL == 1
-        if (perfts[0] == ALLSET)
-#else
         if (perfts[i] == ALLSET)
-#endif
         {
+#if SINGLE_LAUNCH_FOR_LAST_LEVEL == 1
+            printf("\nUnexpected ERROR? Exiting!!\n");
+            exit(0);
+#endif
             // OOM error!
             // try with lower depth
             perfts[i] = perft_bb_last_level_launcher(&childBoards[i], depth - 1);
@@ -623,29 +661,34 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
         HashKey128b posHash128b = hashes[i];
 
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
-        newEntryPointer[i]->hashLow = hashes[i].lowPart;
-        newEntryPointer[i]->hashHigh = (uint32) hashes[i].highPart;
-        newEntryPointer[i]->perft = perfts[i];
-#else
-        HashEntryPerft128b oldEntry;
-        oldEntry = hashTable[posHash128b.lowPart & indexBits];
-
-        // replace only if old entry was shallower (or of same depth)
-        if (hashTable && oldEntry.depth <= (depth - 1))
+        if (depth == GPU_LAUNCH_DEPTH + 1)
         {
-            HashEntryPerft128b newEntry;
-            newEntry.perftVal = perfts[i];
-            newEntry.hashKey.highPart = posHash128b.highPart;
-            newEntry.hashKey.lowPart = (posHash128b.lowPart & hashBits);
-            newEntry.depth = (depth - 1);
-
-            // XOR hash part with data part for lockless hashing
-            newEntry.hashKey.lowPart ^= newEntry.perftVal;
-            newEntry.hashKey.highPart ^= newEntry.perftVal;
-
-            hashTable[posHash128b.lowPart & indexBits] = newEntry;
+            newEntryPointer[i]->hashLow = hashes[i].lowPart;
+            newEntryPointer[i]->hashHigh = (uint32)hashes[i].highPart;
+            newEntryPointer[i]->perft = perfts[i];
         }
+        else
 #endif
+        {
+            HashEntryPerft128b oldEntry;
+            oldEntry = hashTable[posHash128b.lowPart & indexBits];
+
+            // replace only if old entry was shallower (or of same depth)
+            if (hashTable && oldEntry.depth <= (depth - 1))
+            {
+                HashEntryPerft128b newEntry;
+                newEntry.perftVal = perfts[i];
+                newEntry.hashKey.highPart = posHash128b.highPart;
+                newEntry.hashKey.lowPart = (posHash128b.lowPart & hashBits);
+                newEntry.depth = (depth - 1);
+
+                // XOR hash part with data part for lockless hashing
+                newEntry.hashKey.lowPart ^= newEntry.perftVal;
+                newEntry.hashKey.highPart ^= newEntry.perftVal;
+
+                hashTable[posHash128b.lowPart & indexBits] = newEntry;
+            }
+        }
     }
 
     return count;
@@ -799,6 +842,7 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
     memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
     memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+    chainIndex = 0;
 #endif
     cudaError_t cudaStatus;
 

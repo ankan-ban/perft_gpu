@@ -785,6 +785,8 @@ struct CompactPosRecord
         pos->enPassent = enPassent;
         *val = perftVal;
         *nextIndex = (nextHigh << 11) | nextLow;
+
+        return true;
     }
 };
 
