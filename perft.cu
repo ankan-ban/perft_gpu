@@ -33,6 +33,10 @@
 // launch one level of work serially on GPU
 #define ENABLE_GPU_SERIAL_LEVEL 0
 
+// use a hash table to store *all* positions at depth 7/8, etc
+#define USE_COMPLETE_TT_AT_LAST_CPU_LEVEL 1
+
+
 // size of transposition tables for each depth
 // depth1 transposition table has special purpose -> to find duplicates for 'deep' levels during BFS
 // 20 bits ->  1 million entries  (16 MB)
@@ -44,43 +48,62 @@
 
 const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
-#if 0
+#if 1
 // settings for Titan X (12 GB card) + 32 GB sysmem
-const uint32 ttBits[] = {0,       24,    25,     27,     27,      27,     27,     28,     28,      0,      0,      0,      0,      0,      0,      0};
-const bool   sysmem[] = {true, false, false,  false,   false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-const int  sharedHashBits = 27;
+const uint32 ttBits[] = {0,       24,    25,     27,     28,     27,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
+const bool   sysmem[] = {true, false, false,  false,   false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
+const int  sharedHashBits = 26;
+
+// 128 million entries for the main hash table part
+#define COMPLETE_TT_BITS 27
+
+// 1 billion entries (for chained part)
+#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 1024*1024*1024
+
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
 const uint32 ttBits[] = { 0,       23,    25,     26,     26,     26,     26,     27,     26,      0,      0,      0,      0,      0,      0,      0 };
 const bool   sysmem[] = { true, false, false,  false,  false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true };
 const int  sharedHashBits = 26;
 
+// 16 million entries for the main hash table part
+#define COMPLETE_TT_BITS 24
+
+// 128 million entries (for chained part)
+#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 128*1024*1024
+
 #elif 0
 // settings for home PC (GTX 970: 4 GB card + 8 GB sysmem)
 const uint32 ttBits[] = {0,       20,    25,     26,     26,     25,     26,     25,     25,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 25;
+
+// 16 million entries for the main hash table part
+#define COMPLETE_TT_BITS 24
+
+// 128 million entries (for chained part)
+#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 128*1024*1024
+
 #else
 // settings for laptop (2 GB card + 16 GB sysmem)
 const uint32 ttBits[] = {0,       22,     25,     27,     27,     26,     25,      0,      0,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false,  false,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 20;
-#endif
-const bool sharedsysmem = true;
-
-// use a hash table to store *all* positions at depth 7/8, etc
-#define USE_COMPLETE_TT_AT_LAST_CPU_LEVEL 1
 
 // 16 million entries for the main hash table part
 #define COMPLETE_TT_BITS 24
 
-#define COMPLETE_TT_INDEX_BITS GET_TT_INDEX_BITS(COMPLETE_TT_BITS)
-
 // 128 million entries (for chained part)
 #define COMPLETE_HASH_CHAIN_ALLOC_SIZE 128*1024*1024
 
-CompleteHashEntry *completeTT;
-CompleteHashEntry *chainMemory;
+#endif
+const bool sharedsysmem = true;
+
+
+#define COMPLETE_TT_INDEX_BITS GET_TT_INDEX_BITS(COMPLETE_TT_BITS)
+
+CompleteHashEntry *completeTT = NULL;
+CompleteHashEntry *chainMemory = NULL;
 uint32 chainIndex = 0;
 
 int numGPUs = 0;
@@ -207,10 +230,13 @@ void setupHashTables128b(TTInfo128b &tt)
     sysmemTablesAllocated = true;
 
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
-    completeTT = (CompleteHashEntry *) malloc(GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
-    memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
-    chainMemory = (CompleteHashEntry *)malloc(COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
-    memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+    if (completeTT == NULL)
+    {
+        completeTT = (CompleteHashEntry *)malloc(GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+        memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+        chainMemory = (CompleteHashEntry *)malloc(COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+        memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+    }
 #endif
 }
 
@@ -442,7 +468,7 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 
 
 int splitDepth = MIN_SPLIT_DEPTH;
-int maxMemoryUsage = 0;
+uint32 maxMemoryUsage = 0;
 
 int numRegularLaunches = 0;
 int numRetryLaunches = 0;
@@ -634,7 +660,7 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 
 
     // update memory usage estimation
-    int currentMemUsage = 0;
+    uint32 currentMemUsage = 0;
     cudaError_t s = cudaMemcpyFromSymbol(&currentMemUsage, maxMemoryUsed, sizeof(int), 0, cudaMemcpyDeviceToHost);
     if (currentMemUsage > maxMemoryUsage)
     {
@@ -840,9 +866,9 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
 {
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
-    memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
-    memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
-    chainIndex = 0;
+    //memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+    //memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
+    //chainIndex = 0;
 #endif
     cudaError_t cudaStatus;
 
@@ -1255,7 +1281,8 @@ int main(int argc, char *argv[])
         cudaDeviceReset();
     }
     
-    printf("\nMax memory usage: %d bytes\n", maxMemoryUsage);
+    printf("\nComplete hash sysmem memory usage: %llu bytes\n", ((uint64) chainIndex) * sizeof(CompleteHashEntry));
+    printf("\nMax tree storage GPU memory usage: %llu bytes\n", maxMemoryUsage);
     printf("Regular depth %d Launches: %d\n", GPU_LAUNCH_DEPTH, numRegularLaunches);
     printf("Retry launches: %d\n", numRetryLaunches);
 
