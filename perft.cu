@@ -1041,6 +1041,7 @@ void removeNewLine(char *str)
     }
 }
 
+#if PERFT_RECORDS_MODE == 1
 void processPerftRecords(int argc, char *argv[])
 {
     int depth = 7;
@@ -1157,7 +1158,7 @@ void processPerftRecords(int argc, char *argv[])
 
     printf("Retry launches: %d\n", numRetryLaunches);
 }
-
+#endif
 
 
 int main(int argc, char *argv[])
@@ -1254,8 +1255,10 @@ int main(int argc, char *argv[])
     uint32 launchDepth = estimateLaunchDepth(&testBB);
     launchDepth = min(launchDepth, 11); // don't go too high
 
+#if USE_TRANSPOSITION_TABLE == 0
     // for best performance without GPU hash (also set PREALLOCATED_MEMORY_SIZE to 3 x 768MB)
-    // launchDepth = 6;    // ankan - test!
+    launchDepth = 6;    // ankan - test!
+#endif
 
     if (argc >= 5)
     {
@@ -1272,19 +1275,22 @@ int main(int argc, char *argv[])
         perftLauncher(&testBB, depth, launchDepth);
     }
 
-
+#if USE_TRANSPOSITION_TABLE == 1
     freeHashTables();
+#endif
 
     for (int g = 0; g < numGPUs; g++)
     {
         cudaFree(preAllocatedBufferHost[g]);
         cudaDeviceReset();
     }
-    
+
+#if USE_TRANSPOSITION_TABLE == 1    
     printf("\nComplete hash sysmem memory usage: %llu bytes\n", ((uint64) chainIndex) * sizeof(CompleteHashEntry));
     printf("\nMax tree storage GPU memory usage: %llu bytes\n", maxMemoryUsage);
     printf("Regular depth %d Launches: %d\n", GPU_LAUNCH_DEPTH, numRegularLaunches);
     printf("Retry launches: %d\n", numRetryLaunches);
+#endif
 
     return 0;
 }

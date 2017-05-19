@@ -101,13 +101,6 @@ uint64 perft_bb(HexaBitBoardPosition *pos, uint32 depth)
 }
 
 
-
-
-// can be tuned as per need
-// 256 works best for Maxwell
-// (also make sure max registers used is set to 47)
-#define BLOCK_SIZE 256
-
 // fixed
 #define WARP_SIZE 32
 
@@ -332,7 +325,7 @@ union sharedMemAllocs
 };
 
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4 )
+__launch_bounds__( BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition **positions, CMove *moves, uint64 *globalPerftCounter, int nThreads)
 {
@@ -374,7 +367,7 @@ __global__ void perft_bb_gpu_single_level(HexaBitBoardPosition **positions, CMov
 // positions        - array of pointers to old boards
 // generatedMoves   - moves to be made
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4)
+__launch_bounds__( BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions, CMove *generatedMoves, uint64 *globalPerftCounter, int nThreads)
 {
@@ -414,7 +407,7 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
 
 // same as above function but works with indices
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__(BLOCK_SIZE, 4)
+__launch_bounds__(BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *positions, int *indices, CMove *moves, uint64 *globalPerftCounter, int nThreads)
 {
@@ -456,7 +449,7 @@ __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *po
 // this version gets seperate perft counter per thread
 // perftCounters[] is array of pointers to perft counters - where each thread should atomically add the computed perft
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4)
+__launch_bounds__( BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions, CMove *generatedMoves, uint64 **perftCounters, int nThreads)
 {
@@ -511,7 +504,7 @@ __global__ void makeMove_and_perft_single_level(HexaBitBoardPosition **positions
 
 // this version uses the indices[] array to index into parentPositions[] and parentCounters[] arrays
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4)
+__launch_bounds__( BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *parentBoards, uint32 *parentCounters, 
                                                         int *indices, CMove *moves, int nThreads)
@@ -569,7 +562,7 @@ __global__ void makeMove_and_perft_single_level_indices(HexaBitBoardPosition *pa
 // the move counts are returned in moveCounts[] array
 template <bool genBoard>
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__( BLOCK_SIZE, 4 )
+__launch_bounds__( BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **positions, CMove *moves, HexaBitBoardPosition *outPositions, uint32 *moveCounts, int nThreads)
 {
@@ -603,7 +596,7 @@ __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition **pos
 // 2. makes the move on parent board to produce current board. Writes it to outPositions[].
 // 3. Counts moves at current board position and writes it to moveCounts[].
 #if LIMIT_REGISTER_USE == 1
-__launch_bounds__(BLOCK_SIZE, 4)
+__launch_bounds__(BLOCK_SIZE, MIN_BLOCKS_PER_MP)
 #endif
 __global__ void makemove_and_count_moves_single_level(HexaBitBoardPosition *parentBoards, int *indices, CMove *moves,
                                                       HexaBitBoardPosition *outPositions, int *moveCounts, int nThreads)
