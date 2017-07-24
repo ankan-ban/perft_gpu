@@ -3,7 +3,7 @@
 // the routines that actually generate the moves
 #include "MoveGeneratorBitboard.h"
 
-#define MAX_GPUs 4
+#define MAX_GPUs 8
            void   *preAllocatedBufferHost[MAX_GPUs];
 __device__ void   *preAllocatedBuffer;
 __device__ uint32  preAllocatedMemoryUsed;

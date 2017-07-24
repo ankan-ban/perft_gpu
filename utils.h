@@ -331,7 +331,7 @@ static double gTime;
 
 #define STOP_TIMER \
     end = clock(); \
-    gTime = (double)(end - start) / 1000.0; }
+    gTime = (double)(end - start) / CLOCKS_PER_SEC; }
 // for timing CPU code : end
 
 

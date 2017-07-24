@@ -50,12 +50,12 @@ const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  fa
 
 #if 1
 // settings for Titan X (12 GB card) + 32 GB sysmem
-const uint32 ttBits[] = {0,       24,    25,     27,     28,     27,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
+const uint32 ttBits[] = {0,       24,    25,     27,     28,     28,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 26;
 
 // 128 million entries for the main hash table part
-#define COMPLETE_TT_BITS 27
+#define COMPLETE_TT_BITS 28
 
 // 1 billion entries (for chained part)
 #define COMPLETE_HASH_CHAIN_ALLOC_SIZE 1024*1024*1024
@@ -446,6 +446,31 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
         dispStringForThread[chosenThread] = childStrings[i];
         perftForThread[chosenThread] = &perftResults[i];
         threadStatus[chosenThread] = WORK_SUBMITTED;
+    }
+
+    // Ankan - TODO: if there is any thread idle, give it same position as some other active thread
+    //        it will at least do something useful.
+    while(1)
+    {
+        bool allIdle = true;
+        for (int t = 0; t < numGPUs; t++)
+        {
+            if (threadStatus[t] == THREAD_IDLE)
+            {
+                for (int t2 = 0; t2 < numGPUs; t2++)
+                if (threadStatus[t2] != THREAD_IDLE)
+                {
+                    posForThread[t] = posForThread[t2];
+                    dispStringForThread[t] = dispStringForThread[t2];
+                    InfInt temp;
+                    perftForThread[t] = &temp;
+                    threadStatus[t] = WORK_SUBMITTED;
+                    allIdle = false;
+                }
+            }
+        }
+        if(allIdle)
+        break;
     }
 
     // wait for all threads to terminate
@@ -866,7 +891,10 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
 {
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
-    //memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+    // need to clear this as it would otherwise contain perfts of other depths
+    memset(completeTT, 0, GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry));
+
+    // no need to clear this if we don't reuse old entries
     //memset(chainMemory, 0, COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry));
     //chainIndex = 0;
 #endif
@@ -980,7 +1008,7 @@ void initGPU(int gpu)
         exit(0);
     }
 
-    uint64 free = 0, total = 0;
+    size_t free = 0, total = 0;
     cudaMemGetInfo(&free, &total);
     printf("\ngpu: %d, memory total: %llu, free: %llu", gpu, total, free);
 

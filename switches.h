@@ -36,7 +36,7 @@
 #define USE_CONSTANT_MEMORY_FOR_LUT 0
 
 // make use of a hash table to avoid duplicate calculations due to transpositions
-#define USE_TRANSPOSITION_TABLE 0
+#define USE_TRANSPOSITION_TABLE 1
 
 #if USE_TRANSPOSITION_TABLE == 1
 
@@ -93,7 +93,7 @@
 #define USE_BITWISE_MAGIC_FOR_CASTLE_FLAG_UPDATION 0
 
 // intel core 2 doesn't have popcnt instruction
-#define USE_POPCNT 1
+#define USE_POPCNT 0
 
 // pentium 4 doesn't have fast HW bitscan
 #define USE_HW_BITSCAN 1

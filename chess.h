@@ -438,6 +438,7 @@ union HashKey128b
 };
 CT_ASSERT(sizeof(HashKey128b) == 16);
 
+/*
 struct ShallowHashEntry128b
 {
     union
@@ -455,10 +456,10 @@ struct ShallowHashEntry128b
     };
 };
 CT_ASSERT(sizeof(ShallowHashEntry128b) == 16);
-
+*/
 // hash table entry for Perft
 #pragma pack(push, 1)
-struct HashEntryPerft128b
+struct  HashEntryPerft128b
 {
     // WAR for silly compiler bug??
     // it says that it can't call default constructor because it was deleted!!@??
@@ -469,10 +470,8 @@ struct HashEntryPerft128b
 
     union
     {
-        struct
-        {
-            HashKey128b hashKey;
-        };
+
+        HashKey128b hashKey;
         struct
         {
             // 8 LSB's are not important as the hash table size is at least > 256 entries
