@@ -36,6 +36,10 @@
 // use a hash table to store *all* positions at depth 7/8, etc
 #define USE_COMPLETE_TT_AT_LAST_CPU_LEVEL 1
 
+#define MEASURE_GPU_ACTIVE_TIME 1
+double gpuTime = 0.0;
+
+std::mutex timerCS;
 
 // size of transposition tables for each depth
 // depth1 transposition table has special purpose -> to find duplicates for 'deep' levels during BFS
@@ -49,10 +53,10 @@
 const bool  shallow[] = {true,  true,  true,   true,   true,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false,  false};
 
 #if 1
-// settings for Titan X (12 GB card) + 32 GB sysmem
+// settings for P100 (16 GB card) + 32 GB+ sysmem
 const uint32 ttBits[] = {0,       24,    25,     27,     28,     28,      0,      0,      0,      0,      0,      0,      0,      0,      0,      0};
 const bool   sysmem[] = {true, false, false,  false,   false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
-const int  sharedHashBits = 26;
+const int  sharedHashBits = 28;
 
 // 128 million entries for the main hash table part
 #define COMPLETE_TT_BITS 28
@@ -346,6 +350,7 @@ volatile InfInt *perftForThread[MAX_GPUs];
 
 std::mutex criticalSection;
 
+
 void worker_thread_start(uint32 depth, uint32 gpuId)
 {
     cudaSetDevice(gpuId);
@@ -612,6 +617,10 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
         printf("Can't even meet depth - 1 ??\n");
     }
 
+#if MEASURE_GPU_ACTIVE_TIME == 1
+    START_TIMER
+#endif
+
     // copy host->device in one go
     cudaMemcpy(gpuBoard[activeGpu], childBoards, sizeof(HexaBitBoardPosition)*nNewBoards, cudaMemcpyHostToDevice);
     cudaMemset(gpu_perft[activeGpu], 0, sizeof(uint64)*nNewBoards);
@@ -683,6 +692,12 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
     }
 #endif
 
+#if MEASURE_GPU_ACTIVE_TIME == 1
+    STOP_TIMER
+    timerCS.lock();
+    gpuTime += gTime;
+    timerCS.unlock();
+#endif
 
     // update memory usage estimation
     uint32 currentMemUsage = 0;
@@ -934,9 +949,9 @@ void dividedPerft(HexaBitBoardPosition *pos, uint32 depth)
     STOP_TIMER
 
     //printf("Perft(%02d):%20llu, time: %8g s\n", depth, perft, gTime);
-    printf("Perft(%02d):%20s, time: %8g s\n", depth, perft.toString().c_str(), gTime);
-    fflush(stdout);
-
+    printf("Perft(%02d):%20s, time: %8g s, gpuTime: %8g s\n", depth, perft.toString().c_str(), gTime, gpuTime/numGPUs);
+    gpuTime = 0;
+    fflush(stdout);Time: 
     for (int i = 0; i < numGPUs; i++)
     {
         cudaSetDevice(i);

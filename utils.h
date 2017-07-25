@@ -1,4 +1,5 @@
 #include "cuda_runtime.h"
+#include <chrono>
 
 
 /** Declarations for class/methods in Util.cpp **/
@@ -326,12 +327,11 @@ private:
 // for timing CPU code : start
 static double gTime;
 #define START_TIMER { \
-    clock_t start, end; \
-    start = clock();
+    auto t_start = std::chrono::high_resolution_clock::now();
 
 #define STOP_TIMER \
-    end = clock(); \
-    gTime = (double)(end - start) / CLOCKS_PER_SEC; }
+    auto t_end = std::chrono::high_resolution_clock::now();\
+    gTime = std::chrono::duration<double>(t_end-t_start).count();}
 // for timing CPU code : end
 
 
