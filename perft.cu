@@ -36,6 +36,25 @@
 // use a hash table to store *all* positions at depth 7/8, etc
 #define USE_COMPLETE_TT_AT_LAST_CPU_LEVEL 1
 
+// store a level (depth-4) of positions in a persistent disk hash
+// useful for save/restore of work AND also 
+// for parallel perft over network with multiple nodes
+#define ENABLE_DISK_HASH 1
+// min problem size to make use of DISK_HASH
+#define DISK_HASH_MIN_DEPTH 12
+#define DISK_HASH_LEVEL 3
+
+#if ENABLE_DISK_HASH == 1
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
+
+// ~4096 entries for the main hash table part
+#define DISK_TT_BITS 12
+
+#endif
+
+
 #define MEASURE_GPU_ACTIVE_TIME 1
 double gpuTime = 0.0;
 
@@ -324,6 +343,17 @@ void sortMoves(CMove *moves, int nMoves)
     memcpy(moves, sortedMoves, sizeof(CMove)* nMoves);
 }
 
+void randomizeMoves(CMove *moves, int nMoves)
+{
+    for (int i=0;i<nMoves;i++)
+    {
+        int j = std::rand() % nMoves;
+        CMove otherMove = moves[j];
+        moves[j] = moves[i];
+        moves[i] = otherMove;
+    }
+}
+
 InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *dispPrefix);
 
 thread_local int activeGpu = 0;
@@ -349,7 +379,7 @@ volatile char *dispStringForThread[MAX_GPUs];
 volatile InfInt *perftForThread[MAX_GPUs];
 
 std::mutex criticalSection;
-
+std::mutex diskCS;
 
 void worker_thread_start(uint32 depth, uint32 gpuId)
 {
@@ -402,7 +432,13 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
     InfInt perftResults[MAX_MOVES];
 
     int nMoves = generateMoves(pos, pos->chance, genMoves);
+
+// doesn't help :-/
+//#if ENABLE_DISK_HASH == 1
+//    randomizeMoves(genMoves, nMoves);
+//#else    
     sortMoves(genMoves, nMoves);
+//#endif    
 
     std::thread threads[MAX_GPUs];
     // Launch a thread for each GPU
@@ -497,6 +533,8 @@ InfInt perft_multi_threaded_gpu_launcher(HexaBitBoardPosition *pos, uint32 depth
 }
 
 
+int diskHashDepth = 0;  // set to search depth - 4
+
 int splitDepth = MIN_SPLIT_DEPTH;
 uint32 maxMemoryUsage = 0;
 
@@ -544,28 +582,27 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
             entry = &completeTT[newHash.lowPart & COMPLETE_TT_INDEX_BITS];
             while (1)
             {
-                if (entry->hashHigh == 0 && entry->hashLow == 0)
+                if (entry->hash == HashKey128b(0,0))
                 {
                     // blank record
 
                     // mark in-use (so that other parallel thread doesn't overwrite it)
                     // with this approach there is a (very!) small chance that duplicate entries might get added for the same position.
                     //  ... but it should always be correct.
-                    entry->hashHigh = ~0;
-                    entry->hashLow = ALLSET;
-                    entry->next = ~0;
+                    entry->hash = HashKey128b(ALLSET,ALLSET);
+                    entry->next = ALLSET;
 
                     entryPtr = entry;
                     break;
                 }
-                if (entry->hashHigh == (newHash.highPart & 0xFFFFFFFF) && entry->hashLow == newHash.lowPart)
+                if (entry->hash == newHash)
                 {
                     // hash hit
                     count += entry->perft;
                     break;
                 }
 
-                if (entry->next == ~0)
+                if (entry->next == ALLSET)
                 {
                     entry->next = chainIndex++;
                     if (chainIndex > COMPLETE_HASH_CHAIN_ALLOC_SIZE)
@@ -729,8 +766,7 @@ uint64 perft_bb_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
         if (depth == GPU_LAUNCH_DEPTH + 1)
         {
-            newEntryPointer[i]->hashLow = hashes[i].lowPart;
-            newEntryPointer[i]->hashHigh = (uint32)hashes[i].highPart;
+            newEntryPointer[i]->hash = hashes[i];
             newEntryPointer[i]->perft = perfts[i];
         }
         else
@@ -789,6 +825,102 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
             return entry.perftVal;
         }
     }
+
+#if ENABLE_DISK_HASH == 1
+
+    // new entry to update in case of hash miss
+    uint64 diskEntryIndex = 0; 
+    DiskHashEntry diskEntry = {};
+
+    if (depth == diskHashDepth)
+    {
+        // check disk hash
+        uint64 ttVal = ALLSET;
+        int fd = open("perfthash.dat", O_RDWR);
+
+        uint64 index = posHash128b.lowPart & GET_TT_INDEX_BITS(DISK_TT_BITS);
+
+
+        diskCS.lock(); // protect against parallel access in same process!
+
+        // protect against parallel access across nodes of cluster
+        // this doesn't seem to work (causes cluster to hang!)
+        // flock(fd, LOCK_EX);
+        // use a lockfile instead
+        int lfd;
+        while((lfd = open(".lock", O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) == -1) ;
+        close(lfd);
+
+        lseek(fd, index*sizeof(DiskHashEntry), SEEK_SET);
+        read(fd, &diskEntry, sizeof(DiskHashEntry));
+        while(1)
+        {
+            if(diskEntry.hash == HashKey128b(0,0))
+            {
+                // blank record
+
+                // mark in-use (so that other parallel thread doesn't overwrite it)
+                diskEntry.hash = HashKey128b(ALLSET,ALLSET);
+                diskEntry.next = ~0;
+                diskEntry.depth = depth;
+
+                diskEntryIndex = index;
+                lseek(fd, index*sizeof(DiskHashEntry), SEEK_SET);
+                write(fd, &diskEntry, sizeof(DiskHashEntry));                
+                break;                
+            }
+            if (diskEntry.hash == posHash128b && diskEntry.depth == depth)
+            {
+                // hash hit
+                ttVal = diskEntry.perft;
+                break;
+            }
+            if (diskEntry.next == ~0)
+            {
+                // add new entry to chain
+                uint64 nextIndex = lseek(fd, 0, SEEK_END) / sizeof(DiskHashEntry);
+                diskEntry.next = nextIndex;
+                lseek(fd, index*sizeof(DiskHashEntry), SEEK_SET);
+                write(fd, &diskEntry, sizeof(DiskHashEntry));
+
+                DiskHashEntry blankRecord = {};
+                lseek(fd, nextIndex * sizeof(DiskHashEntry), SEEK_SET);
+                write(fd, &blankRecord, sizeof(DiskHashEntry));
+            }
+
+            // go to the next entry in chain
+            index = diskEntry.next;
+            lseek(fd, index*sizeof(DiskHashEntry), SEEK_SET);
+            read(fd, &diskEntry, sizeof(DiskHashEntry));
+        }
+        
+        //flock(fd, LOCK_UN);
+        close(fd);
+        remove(".lock");
+        diskCS.unlock();
+
+        if (ttVal != ALLSET)
+        {
+            // store in local in-memory hash table for faster access next time
+            // replace only if old entry was shallower (or of same depth)
+            if (hashTable && (entry.depth <= depth))
+            {
+                HashEntryPerft128b newEntry;
+                newEntry.perftVal = ttVal;
+                newEntry.hashKey.highPart = posHash128b.highPart;
+                newEntry.hashKey.lowPart = (posHash128b.lowPart & hashBits);
+                newEntry.depth = depth;
+
+                // XOR hash part with data part for lockless hashing
+                newEntry.hashKey.lowPart ^= newEntry.perftVal;
+                newEntry.hashKey.highPart ^= newEntry.perftVal;
+
+                hashTable[posHash128b.lowPart & indexBits] = newEntry;
+            }
+            return ttVal;
+        }
+    }
+#endif    
 
     uint32 nMoves = 0;
     InfInt count = 0;
@@ -851,7 +983,16 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 #endif
     {
         nMoves = generateMoves(pos, pos->chance, genMoves);
-        sortMoves(genMoves, nMoves);
+#if ENABLE_DISK_HASH == 1
+        if (depth > diskHashDepth)
+        {
+            randomizeMoves(genMoves, nMoves);
+        }
+        else
+#endif   
+        {     
+            sortMoves(genMoves, nMoves);
+        }
 
         for (uint32 i = 0; i < nMoves; i++)
         {
@@ -898,6 +1039,24 @@ InfInt perft_bb_cpu_launcher(HexaBitBoardPosition *pos, uint32 depth, char *disp
 
         hashTable[posHash128b.lowPart & indexBits] = newEntry;
     }
+
+    // update disk hash table too!
+#if ENABLE_DISK_HASH == 1
+    if ((depth == diskHashDepth) && (count < InfInt(ALLSET)))
+    {
+        diskEntry.hash = posHash128b;
+        diskEntry.perft = count.toUnsignedLongLong();
+        diskEntry.depth = depth;
+        diskEntry.next = ~0;
+
+        diskCS.lock();        // avoid parallel file access from same process
+        int fd = open("perfthash.dat", O_RDWR);
+        lseek(fd, diskEntryIndex * sizeof(DiskHashEntry), SEEK_SET);
+        write(fd, &diskEntry, sizeof(DiskHashEntry));
+        close(fd);
+        diskCS.unlock();        
+    }    
+#endif
 
     return count;
 }
@@ -971,6 +1130,11 @@ void perftLauncher(HexaBitBoardPosition *pos, uint32 depth, int launchDepth)
     // split at the topmost level to get best hash table utilization
     if (depth > MIN_SPLIT_DEPTH)
         splitDepth = depth;
+
+    if (depth >= DISK_HASH_MIN_DEPTH) {
+        diskHashDepth = depth - DISK_HASH_LEVEL;
+        //printf("diskHashDepth: %d\n", diskHashDepth);
+    }
 
     dividedPerft(pos, depth);
 #else
@@ -1206,6 +1370,7 @@ void processPerftRecords(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    std::srand(std::time(0));
 #if PERFT_RECORDS_MODE == 1
     processPerftRecords(argc, argv);
     return 0;
@@ -1231,6 +1396,29 @@ int main(int argc, char *argv[])
     {
         numGPUs = totalGPUs;
     }
+
+#if USE_TRANSPOSITION_TABLE == 1
+#if ENABLE_DISK_HASH == 1
+    // check if disk hash table is present, if not create one
+
+    // the first 2^20 entries is the table part containing indexes to the chained part
+    // the chained part immediately follow.
+    // Every entry is a DiskHashEntry structure which is of 32 bytes
+    //
+    // size of chained part (and so the next pointer to free space) isn't 
+    // stored anywhere - it's computed from file size
+
+    int fd = open("perfthash.dat", O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (fd != -1)
+    {
+        DiskHashEntry emptyEntry = {};
+        for(int i = 0; i < GET_TT_SIZE_FROM_BITS(DISK_TT_BITS); i++)
+            write(fd, &emptyEntry, sizeof(DiskHashEntry));
+        close(fd);
+    }
+    
+#endif
+#endif
 
     for (int g = 0; g < numGPUs; g++)
     {

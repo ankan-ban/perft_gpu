@@ -435,6 +435,11 @@ union HashKey128b
         this->highPart = this->highPart ^ b.highPart;
         return *this;
     }
+
+    CUDA_CALLABLE_MEMBER bool operator==(const HashKey128b& b)
+    {
+        return (this->lowPart == b.lowPart) && (this->highPart == b.highPart);
+    }
 };
 CT_ASSERT(sizeof(HashKey128b) == 16);
 
@@ -495,12 +500,20 @@ CT_ASSERT(sizeof(HashEntryPerft128b) == 24);
 
 struct CompleteHashEntry
 {
-    uint64 perft;       // perft value
-    uint64 hashLow;     // low part of 128 bit hash
-    uint32 hashHigh;    // 32 LSBs of highPart of 128b hash
-    uint32 next;
+    HashKey128b hash;    
+    uint64 perft;      
+    uint64 next;
 };
-CT_ASSERT(sizeof(CompleteHashEntry) == 24);
+CT_ASSERT(sizeof(CompleteHashEntry) == 32);
+
+struct DiskHashEntry
+{
+    HashKey128b    hash;       
+    uint64         perft;       
+    uint32         depth;
+    uint32         next;
+};
+CT_ASSERT(sizeof(DiskHashEntry) == 32);
 
 // most compact board representation using huffman coding (doesn't work for all positions)
 // those positions are stored in a different place
