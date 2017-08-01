@@ -429,6 +429,14 @@ union HashKey128b
         return temp;
     }
 
+    CUDA_CALLABLE_MEMBER HashKey128b operator*(uint32 val)
+    {
+        HashKey128b temp;
+        temp.lowPart = this->lowPart * val;
+        temp.highPart = this->highPart * val;
+        return temp;
+    }    
+
     CUDA_CALLABLE_MEMBER HashKey128b operator^=(const HashKey128b& b)
     {
         this->lowPart = this->lowPart ^ b.lowPart;
@@ -501,7 +509,7 @@ CT_ASSERT(sizeof(HashEntryPerft128b) == 24);
 struct CompleteHashEntry
 {
     HashKey128b hash;    
-    uint64 perft;      
+    uint64 perft;
     uint64 next;
 };
 CT_ASSERT(sizeof(CompleteHashEntry) == 32);

@@ -1,5 +1,5 @@
 HEADERS = chess.h switches.h MoveGeneratorBitboard.h perft_bb.h 
-OBJECTS = randoms.o GlobalVars.o Magics.o UciInterface.o util.o perft.obj
+OBJECTS = randoms.o GlobalVars.o Magics.o UciInterface.o util.o network.o perft.obj
 
 default: perft_gpu
 
