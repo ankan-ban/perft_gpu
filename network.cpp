@@ -66,7 +66,7 @@ void printIpAddress(char *addrString)
     freeifaddrs(ifaddr);
 }
 
-
+volatile bool sendingCompleteTT = false;
 
 // max 1 million entires can be in flight
 #define MAX_QUEUE_LENGTH (1024*1024)
@@ -85,12 +85,28 @@ volatile uint32 get = MAX_QUEUE_LENGTH - 1;  // position from where the last wor
 
 std::mutex queueCS;
 
+std::mutex clientCS;
+
 // happens on main thread
 // puts a completed work item in workQueue
 void enqueueWorkItem(CompleteHashEntry *item)
 {
     // wait for space to be available on queue
-    while (put == get) ;
+    if (put == get)
+    {
+        auto t_start = std::chrono::high_resolution_clock::now();        
+        while (put == get) 
+        {
+            auto t_end = std::chrono::high_resolution_clock::now();
+            uint32 waitTime = (uint32) std::chrono::duration<double>(t_end-t_start).count();
+            if (waitTime % 10 == 5)
+            {
+                printf("\nenqueueWorkItem waited for > %d seconds\n", waitTime);
+                fflush(stdout);
+                sleep(1);
+            }
+        }
+    }
 
     queueCS.lock();     // to protect against multiple worker threads generating work items
     WorkQueue[put].hash  = item->hash;
@@ -109,7 +125,16 @@ char nodeIPs[MAX_NODES][16];
 uint32 nodePorts[MAX_NODES];
 bool reachable[MAX_NODES];
 
+#define BROADCAST_PORT      0x4dab
+#define COMPLETE_TT_PORT    0x1dab
+
 int numNodes = 0;
+
+void markAllReachable()
+{
+    for (int i=0;i<MAX_NODES;i++)
+        reachable[i] = true;
+}
 
 int readNodeFile(FILE *fp)
 {
@@ -131,7 +156,7 @@ void writeNodeFile(FILE *fp)
 
 
 
-std::thread networkThread, broadcasterThread;
+std::thread networkThread, broadcasterThread, completeTTServerThread;
 volatile bool networkThreadKillRequest = false;
 volatile bool broadcasterThreadKillRequest = false;
 
@@ -159,12 +184,22 @@ void unlockCompleteTT();
 
 // accessors for  transferring entire completeTT
 extern CompleteHashEntry *completeTT;
-extern CompleteHashEntry *chainMemory;
+
+extern CompleteHashEntry *chainMemoryChunks[1024];
+extern int nChunks;
+extern uint64 chainIndex;
 extern uint64 completeTTSize;
 extern uint64 chainMemorySize;
 
 
-void writeDataNetwork(int connfd, void *data, uint64 size)
+void allocChainMemoryChunk();
+
+
+// read write 1MB chunks
+#define NETWORK_CHUNK_SIZE (1024*1024)
+#define min(a,b) ((a)<(b) ? (a) : (b))
+
+int writeDataNetwork(int connfd, void *data, uint64 size)
 {
     uint64 n = 0;
     char *buf = (char*) data;
@@ -172,13 +207,24 @@ void writeDataNetwork(int connfd, void *data, uint64 size)
     
     while(remaining)
     {
-        n = write(connfd, buf, remaining);
+        uint64 chunk = min(NETWORK_CHUNK_SIZE, remaining);
+        n = write(connfd, buf, chunk);
+        if (n <= 0)
+        {
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Error writing to network: %s\n", strerror(errno));        
+            fclose(fplog);
+            printf("Error writing to network: %s\n", strerror(errno));
+            fflush(stdout);
+            return -1;
+        }
         buf +=n;
         remaining -= n;
     }
+    return 0;
 }
 
-void readDataNetwork(int sockfd, void *data, uint64 size)
+int readDataNetwork(int sockfd, void *data, uint64 size)
 {
     uint64 n = 0;
     char *buf = (char*) data;
@@ -186,10 +232,21 @@ void readDataNetwork(int sockfd, void *data, uint64 size)
     
     while(remaining)
     {
-        n = read(sockfd, buf, remaining);
+        uint64 chunk = min(NETWORK_CHUNK_SIZE, remaining);        
+        n = read(sockfd, buf, chunk);
+        if (n <= 0)
+        {
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Error reading from network: %s\n", strerror(errno));        
+            fclose(fplog);
+            printf("Error reading from network: %s\n", strerror(errno));
+            fflush(stdout);
+            return -1;
+        }        
         buf +=n;
         remaining -= n;
     }
+    return 0;
 }
 
 
@@ -232,7 +289,7 @@ void broadcaster_thread_body()
         bool unreachableDetected = false;
         for (int i = 0; i < numNodes; i++)
         {
-            if(strcmp(myAddress, nodeIPs[i]) || nodePorts[i] != myPort)
+            if(strcmp(myAddress, nodeIPs[i]))
             {
                 int sockfd = 0;
                 struct sockaddr_in serv_addr = {}; 
@@ -242,6 +299,7 @@ void broadcaster_thread_body()
                 serv_addr.sin_port = htons(nodePorts[i]); 
                 inet_pton(AF_INET, nodeIPs[i], &serv_addr.sin_addr);
 
+                //clientCS.lock();
                 int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
                 if (result < 0)
                 {
@@ -260,19 +318,58 @@ void broadcaster_thread_body()
                 {
                     reachable[i] = true;
                     uint32 command = 1;
-                    write(sockfd, &command, sizeof(uint32));
-                    write(sockfd, &numItems, sizeof(uint32));
+
+                    int n = write(sockfd, &command, sizeof(uint32));
+                    if (n<=0)
+                    {
+                        printf("\nerror writing command for broadcasting work items\n");
+                        fflush(stdout);
+                        //exit(0);
+                        close(sockfd);
+                        continue;
+                    }
+                    
+                    n = write(sockfd, &numItems, sizeof(uint32));
+                    if (n<=0)
+                    {
+                        printf("\nerror writing numItems for broadcasting work items\n");
+                        fflush(stdout);
+                        //exit(0);
+                        close(sockfd);
+                        continue;
+                    }
+                    
                     for (int item = firstItem; item != lastItem; item = (item +1) % MAX_QUEUE_LENGTH)
                     {
-                        write(sockfd, &WorkQueue[item], sizeof(NetworkWorkItem));
+                        n = write(sockfd, &WorkQueue[item], sizeof(NetworkWorkItem));
+                        if (n<=0)
+                        {
+                            printf("\nerror writing work items when broadcasting work items\n");
+                            fflush(stdout);
+                            //exit(0);
+                            close(sockfd);
+                            continue;
+                        }
                     }
-                    write(sockfd, &WorkQueue[lastItem], sizeof(NetworkWorkItem));       
+                    n = write(sockfd, &WorkQueue[lastItem], sizeof(NetworkWorkItem));       
+                    if (n<=0)
+                    {
+                        printf("\nerror writing last work item when broadcasting work items\n");
+                        fflush(stdout);
+                        //exit(0);
+                        close(sockfd);
+                        continue;
+                    }
+                    
                     close(sockfd);
                 }
+                //clientCS.unlock();                
             }
         }
 
         // TODO: check if this is robust enough!
+        //  6 Aug 2017: seems robust enough... (unless lot of job instances are scheduled together)
+#if 1
         if (unreachableDetected)
         {
             int lfd;
@@ -300,8 +397,9 @@ void broadcaster_thread_body()
             fclose(fp);
 
             remove("net.lock");
+            markAllReachable();
         }
-
+#endif
         get = lastItem;
         usleep(10000);  // wait for 10 ms
         counter++;
@@ -316,36 +414,179 @@ void broadcaster_thread_body()
     broadcasterThreadKillRequest = false;    
 }
 
-bool sendingCompleteTT = false;
+#if 0
+// the function below relies on the first two fields to be at same locations!
+CT_ASSERT(sizeof(NetworkWorkItem) == sizeof(CompleteHashEntry));
+#define STAGING_ITEMS (8*1024)
 
-void completeTTServer(int connfd)
+void completeTTServer(struct sockaddr_in client_addr)
 {
-    // send ENTIRE complete TT to client
-
+    char clientip[32]; clientip[0] = 0;
+    inet_ntop(AF_INET, &client_addr.sin_addr, clientip, sizeof(clientip));
     FILE *fplog = fopen(myUID, "ab+");
-    fprintf(fplog, "Server thread got command to send complete TT\n");
+    fprintf(fplog, "Got complete TT request from: %s\n", clientip);
     fclose(fplog);
+
+    struct sockaddr_in serv_addr = {}; 
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(myPort);
+    inet_pton(AF_INET, clientip, &serv_addr.sin_addr);
     
+    sleep(10);  // wait for 10 seconds before starting. Let the new node initialize and get ready for work!
 
-    // 1. take a lock on completeTT to make sure nobody updates it
-    sendingCompleteTT = true;
-    lockCompleteTT();
-
-    // 2. write first the hash table part of the complete TT and then the chain part
     auto t_start = std::chrono::high_resolution_clock::now();
-    writeDataNetwork(connfd, completeTT, completeTTSize);
-    writeDataNetwork(connfd, chainMemory, chainMemorySize);
+
+    uint32 numElements = completeTTSize / sizeof(CompleteHashEntry);
+    for(int i=0; i<numElements;i+=STAGING_ITEMS)
+    {
+        int sockfd = 0;
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        assert(sockfd >= 0);
+        
+        //clientCS.lock();
+        int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        if (result < 0)
+        {
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Error sending complete TT: %s\n", strerror(errno));
+            fclose(fplog);
+            return;
+        }
+        else
+        {
+            uint32 command = 1;
+            uint32 numItems = STAGING_ITEMS;
+            write(sockfd, &command, sizeof(uint32));
+            write(sockfd, &numItems, sizeof(uint32));
+            write(sockfd, &completeTT[i], sizeof(NetworkWorkItem)*STAGING_ITEMS);
+            close(sockfd);
+        }
+        //clientCS.unlock();
+    }
+
     auto t_end = std::chrono::high_resolution_clock::now();
     double transferTime = std::chrono::duration<double>(t_end-t_start).count();
-    unlockCompleteTT();
-    sendingCompleteTT = false;
 
     fplog = fopen(myUID, "ab+");
-    fprintf(fplog, "Complete TT send complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
-                    transferTime, (completeTTSize+chainMemorySize)/(1024*1024*transferTime));
+    fprintf(fplog, "Complete TT sending complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
+                    transferTime, (completeTTSize/* + nChunks * chainMemorySize*/)/(1024*1024*transferTime));
     fclose(fplog);
-    close(connfd);
 }
+#endif
+
+#if 1
+void completeTTServer()
+{
+    // open a socket and start listening for clients
+    int listenfd = 0, connfd = 0;
+    struct sockaddr_in serv_addr = {}; 
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_addr.sin_port = htons(COMPLETE_TT_PORT);
+
+    int result = bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)); 
+    if (result < 0)
+    {
+        printf("some error at bind() call in completeTTServer: %d\n", result);
+        exit(-1);
+    }
+    
+    result = listen(listenfd, 32); 
+    if (result < 0)
+    {
+        printf("some error at listen() call in completeTTServer: %d\n", result);
+        exit(-1);
+    }
+
+    while(1)
+    {
+        struct sockaddr_in clientAddr = {};
+        socklen_t addrLen = sizeof(clientAddr);
+
+        FILE *fplog = fopen(myUID, "ab+");
+        fprintf(fplog, "TT Server: Waiting for new connection...\n");
+        fclose(fplog);
+
+        connfd = accept(listenfd, (sockaddr*) &clientAddr, &addrLen); 
+
+        if (connfd < 0)
+        {
+            printf("some error after accept() call\n");
+            exit(-1);
+        }
+
+        // send ENTIRE complete TT to client
+        char clientip[32]; clientip[0] = 0;
+        inet_ntop(AF_INET, &clientAddr.sin_addr, clientip, sizeof(clientip));
+        fplog = fopen(myUID, "ab+");
+        fprintf(fplog, "Got complete TT request from: %s\n", clientip);
+        fclose(fplog);
+        
+        // 1. take a lock on completeTT to make sure nobody updates it
+        sendingCompleteTT = true;
+        lockCompleteTT();
+
+        // 2. write first the hash table part of the complete TT and then the chain part
+        auto t_start = std::chrono::high_resolution_clock::now();
+        int n = write(connfd, &nChunks, sizeof(int));
+        if (n<=0)
+        {
+            printf("\nerror writing value of nChunks when sending complete TT\n");
+            fflush(stdout);
+            //exit(0);
+            unlockCompleteTT();
+            sendingCompleteTT = false;
+            close(connfd);
+            continue;
+        }
+
+        n = write(connfd, &chainIndex, sizeof(uint64));
+        if (n<=0)
+        {
+            printf("\nerror writing value of chainIndex when sending complete TT\n");
+            fflush(stdout);
+            //exit(0);
+            unlockCompleteTT();
+            sendingCompleteTT = false;
+            close(connfd);
+            continue;
+        }
+
+        n = writeDataNetwork(connfd, completeTT, completeTTSize);
+        if (n<0)
+        {
+            unlockCompleteTT();
+            sendingCompleteTT = false;
+            close(connfd);
+            continue;
+        }
+        for (int i=0;i<nChunks;i++)
+        {
+            n = writeDataNetwork(connfd, chainMemoryChunks[i], chainMemorySize);
+            unlockCompleteTT();
+            sendingCompleteTT = false;
+            close(connfd);
+            continue;
+        }
+
+        auto t_end = std::chrono::high_resolution_clock::now();
+        double transferTime = std::chrono::duration<double>(t_end-t_start).count();
+
+        unlockCompleteTT();
+        sendingCompleteTT = false;
+
+        fplog = fopen(myUID, "ab+");
+        fprintf(fplog, "Complete TT send complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
+                        transferTime, (completeTTSize + nChunks * chainMemorySize)/(1024*1024*transferTime));
+        fclose(fplog);
+
+        close(connfd);
+    }
+
+    close(listenfd);
+}
+#endif
 
 // main network thread responsible for sharing work items across multiple nodes on network
 // 1. adds own ip address to the file containing list of nodes
@@ -354,50 +595,7 @@ void completeTTServer(int connfd)
 void network_thread_body()
 {
     // 1. Add own ip address to list of nodes
-    printIpAddress(myAddress);
-
-    // hack! get ip address from a file where it's manually entered!
-    {
-        FILE *fp;
-        while(!(fp = fopen("ip.txt", "rb+"))) 
-            usleep(100000); // 100ms
-
-        char line[1024];
-        fgets(line, sizeof(line), fp);
-        //sscanf(myAddress, "%s", line);
-        fclose(fp);
-        remove("ip.txt");
-        strncpy(myAddress, line, strlen(line)-1);
-    }
-
-    int lfd;
-    while((lfd = open("net.lock", O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) == -1) ;
-    close(lfd);
-    
-    FILE *fp = fopen("nodes.txt", "rb+");
-    if (fp)
-    {
-        numNodes = readNodeFile(fp);
-        fclose(fp);
-    }
-
-    uint32 existingPort = 0x1dab;
-    for (int i=0;i<numNodes;i++)
-    {
-        reachable[i] = true;
-        if (nodePorts[i] > existingPort)
-            existingPort = nodePorts[i];
-    }
-
-
-    // add current node to the list
-    reachable[numNodes] = true;
-    strcpy(nodeIPs[numNodes], myAddress);
-    myPort = 0x4dab ; //existingPort+1;
-    nodePorts[numNodes] = myPort;
-    numNodes++;
-
-    sprintf(myUID, "%s_%u", myAddress, myPort);
+    //printIpAddress(myAddress);  // this doesn't work inside container :-/
 
 
     // open a socket and start listening for clients
@@ -409,84 +607,35 @@ void network_thread_body()
     serv_addr.sin_port = htons(myPort);
 
     FILE *fplog = fopen(myUID, "ab+");
-
     int result = bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)); 
     fprintf(fplog, "bind returned: %d\n", result);
     result = listen(listenfd, 32); 
     fprintf(fplog, "listen returned: %d\n", result);
+    fprintf(fplog, "num of nodes found: %d\n", numNodes);    
+    fclose(fplog);
+
+
+    // start broadcster thread
+    broadcasterThread       = std::thread(broadcaster_thread_body);
+
+    completeTTServerThread = std::thread(completeTTServer);
 
     // write updated list to file
-    fp = fopen("nodes.txt", "wb+");
+    int lfd;
+    while((lfd = open("net.lock", O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) == -1) ;
+    close(lfd);
+    FILE *fp = fopen("nodes.txt", "wb+");
     writeNodeFile(fp);
     fclose(fp);            
     remove("net.lock");
 
-    fprintf(fplog, "num of nodes found: %d\n", numNodes);    
-    fclose(fplog);
-
-    // get entire complete TT from the first node
-#if 1    
-    if (numNodes > 1)
-    {
-        FILE *fplog = fopen(myUID, "ab+");
-        fprintf(fplog, "Getting complete TT from %s:%u\n", nodeIPs[0], nodePorts[0]);
-        fclose(fplog);
-
-        int sockfd = 0;
-        struct sockaddr_in serv_addr = {}; 
-        sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        assert(sockfd >= 0);
-        serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = htons(nodePorts[0]); 
-        inet_pton(AF_INET, nodeIPs[0], &serv_addr.sin_addr);
-
-        int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-        if (result < 0)
-        {
-            FILE *fplog = fopen(myUID, "ab+");
-            fprintf(fplog, "newly started node had issues getting complete TT from %s:%u, connect returned: %s\n", nodeIPs[0], nodePorts[0], strerror(errno));        
-            fclose(fplog);
-        }
-        else
-        {
-            uint32 command = 2;
-            write(sockfd, &command, sizeof(uint32));
-
-            // 1. take a lock on completeTT to make sure nobody updates it
-            lockCompleteTT();
-
-            // 2. read first the hash table part of the complete TT and then the chain part
-            auto t_start = std::chrono::high_resolution_clock::now();
-            readDataNetwork(sockfd, completeTT, completeTTSize);
-            readDataNetwork(sockfd, chainMemory, chainMemorySize);
-            auto t_end = std::chrono::high_resolution_clock::now();
-            double transferTime = std::chrono::duration<double>(t_end-t_start).count();
-            unlockCompleteTT();
-
-            FILE *fplog = fopen(myUID, "ab+");
-            fprintf(fplog, "Complete TT recieve complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
-                            transferTime, (completeTTSize+chainMemorySize)/(1024*1024*transferTime));
-            fclose(fplog);
-
-            close(sockfd);
-        }
-    }
-#endif
-
-    // start broadcster thread
-    broadcasterThread = std::thread(broadcaster_thread_body);
-
-    //printf("server thread starts\n");
-
     while(!networkThreadKillRequest)
     {
-        connfd = accept(listenfd, (struct sockaddr *) NULL, NULL); 
+        struct sockaddr_in clientAddr = {};
+        socklen_t addrLen = sizeof(clientAddr);
+        connfd = accept(listenfd, (sockaddr*) &clientAddr, &addrLen); 
         uint32 command = 0;
         read(connfd, &command, sizeof(uint32));
-
-        //FILE *fplog = fopen(myUID, "ab+");
-        //fprintf(fplog, "server thread got command: %d\n", command);        
-        //fclose(fplog);
 
         if (command == 1)
         {
@@ -497,21 +646,41 @@ void network_thread_body()
             {
                 NetworkWorkItem workItem = {};
                 read(connfd, &workItem, sizeof(NetworkWorkItem));
-                if (!sendingCompleteTT) // avoid locking down the network
+                if (!sendingCompleteTT)
+                {
+                    // avoid blocking the network
                     completeTTUpdateFromNetwork(workItem.hash, workItem.perft);
+                }
             }
-            close(connfd);            
         }
         else if (command == 2)
         {
-            // send complete TT on a seperate thread to make sure other requests are not blocked
-            std::thread(completeTTServer, connfd);
+            // start complete TT server thread (that sends the entire TT piece by piece to the client who requested it)
+            //completeTTServerThread  = std::thread(completeTTServer, clientAddr);
+            
         }
         else if (command == 3)
         {
             // exit request
-            close(connfd);            
         }
+        else if (command == 4)
+        {
+            // get my IP address!
+            char clientip[32]; clientip[0] = 0;
+            inet_ntop(AF_INET, &clientAddr.sin_addr, clientip, sizeof(clientip));
+            int n = write(connfd, clientip, sizeof(clientip));
+            if (n <= 0)
+            {
+                printf("\nerror writing client IP\n");
+                fflush(stdout);
+                //exit(0);
+            }
+
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Got ip request from: %s\n", clientip);
+            fclose(fplog);
+        }
+        close(connfd);                    
     }
     close (listenfd);
 
@@ -522,12 +691,135 @@ void network_thread_body()
     networkThreadKillRequest = false;
 }
 
-
-
-
 void createNetworkThread()
 {
+    numNodes = 0;
+    updateNodesList();
+
+    if (numNodes > 0)
+    {
+        // get own IP address from an existing node
+        int sockfd = 0;
+        struct sockaddr_in serv_addr = {}; 
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        assert(sockfd >= 0);
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(nodePorts[0]); 
+        inet_pton(AF_INET, nodeIPs[0], &serv_addr.sin_addr);
+
+        int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        uint32 command = 4;
+        int n = write(sockfd, &command, sizeof(uint32));
+        if (n<=0)
+        {
+            printf("\nerror writing command for getting ip address\n");
+            fflush(stdout);
+            exit(0);
+        }
+        char buf[32];
+        read(sockfd, buf, sizeof(buf));
+        strcpy(myAddress, buf);
+        close(sockfd);
+    }
+    else
+    {
+        // hack! get ip address from a file where it's manually entered!
+        FILE *fp;
+        while(!(fp = fopen("ip.txt", "rb+"))) 
+            usleep(100000); // 100ms
+
+        char line[1024];
+        fgets(line, sizeof(line), fp);
+        fclose(fp);
+        remove("ip.txt");
+        strncpy(myAddress, line, strlen(line)-1);
+    }
+
+    // add current node to the list
+    reachable[numNodes] = true;
+    strcpy(nodeIPs[numNodes], myAddress);
+    myPort = BROADCAST_PORT;
+    nodePorts[numNodes] = myPort;
+    numNodes++;
+    sprintf(myUID, "%s_%u", myAddress, myPort);
+
+    
+    if (numNodes > 1)
+    {
+        // ask server (first already running node) to send complete TT
+        int sockfd = 0;
+        struct sockaddr_in serv_addr = {}; 
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        assert(sockfd >= 0);
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(COMPLETE_TT_PORT); 
+        inet_pton(AF_INET, nodeIPs[0], &serv_addr.sin_addr);
+
+        int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        //uint32 command = 2;
+        //write(sockfd, &command, sizeof(uint32));
+
+        if (result < 0)
+        {
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "newly started node had issues getting complete TT from %s:%u, connect returned: %s\n", nodeIPs[0], COMPLETE_TT_PORT, strerror(errno));        
+            fclose(fplog);
+        }
+        else
+        {
+            // read first the hash table part of the complete TT and then the chain part
+            auto t_start = std::chrono::high_resolution_clock::now();
+
+            int incomingChunks = 0;
+            read(sockfd, &incomingChunks, sizeof(int));
+
+            uint64 incomingChainIndex = 0;
+            read(sockfd, &incomingChainIndex, sizeof(uint64));
+            
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "no of incoming chunks: %d, chainIndex: %llu\n", incomingChunks, incomingChainIndex);
+            fclose(fplog);
+            
+            int n = readDataNetwork(sockfd, completeTT, completeTTSize);
+            if (n < 0)
+            {
+                exit(0);
+            }
+
+
+            for (int i=nChunks;i<incomingChunks;i++)
+            {
+                allocChainMemoryChunk();
+            }
+
+            for (int i=0;i<incomingChunks;i++)
+            {
+                n = readDataNetwork(sockfd, chainMemoryChunks[i], chainMemorySize);
+                if (n < 0)
+                {
+                    exit(0);
+                }
+            }
+
+            nChunks = incomingChunks;
+            chainIndex = incomingChainIndex;            
+
+            auto t_end = std::chrono::high_resolution_clock::now();
+            double transferTime = std::chrono::duration<double>(t_end-t_start).count();
+
+            fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Complete TT recieve complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
+                            transferTime, (completeTTSize + nChunks * chainMemorySize)/(1024*1024*transferTime));
+            fclose(fplog);
+
+            close(sockfd);
+        }
+    }
+
     networkThread = std::thread(network_thread_body);
+
+    printf("\nnetwork setup done.\n");
+    fflush(stdout);
 }
 
 void endNetworkThread()
@@ -556,3 +848,98 @@ void endNetworkThread()
     while(networkThreadKillRequest) ;
     networkThread.join();
 }
+
+
+
+
+
+//  code that didn't work or no longer used!
+
+
+
+#if 0
+    uint32 existingPort = 0x1dab;
+    for (int i=0;i<numNodes;i++)
+    {
+        reachable[i] = true;
+        if (nodePorts[i] > existingPort)
+            existingPort = nodePorts[i];
+    }
+#endif
+
+
+#if 0
+    //set master socket to allow multiple connections , 
+    int opt = 1;
+    if( setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, 
+          sizeof(opt)) < 0 )  
+    {  
+        printf("coundn't set socket option for server socket\n");
+        exit(EXIT_FAILURE);
+    } 
+#endif
+
+    // get entire complete TT from the first node
+#if 0
+    if (numNodes > 1)
+    {
+        FILE *fplog = fopen(myUID, "ab+");
+        fprintf(fplog, "Getting complete TT from %s:%u\n", nodeIPs[0], nodePorts[0]);
+        fclose(fplog);
+
+        int sockfd = 0;
+        struct sockaddr_in serv_addr = {}; 
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        assert(sockfd >= 0);
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(COMPLETE_TT_PORT); 
+        inet_pton(AF_INET, nodeIPs[0], &serv_addr.sin_addr);
+
+        int result = connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
+        if (result < 0)
+        {
+            FILE *fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "newly started node had issues getting complete TT from %s:%u, connect returned: %s\n", nodeIPs[0], COMPLETE_TT_PORT, strerror(errno));        
+            fclose(fplog);
+        }
+        else
+        {
+            // 1. take a lock on completeTT to make sure nobody updates it
+            lockCompleteTT();
+
+            // 2. read first the hash table part of the complete TT and then the chain part
+            auto t_start = std::chrono::high_resolution_clock::now();
+
+            int incomingChunks = 0;
+            read(sockfd, &incomingChunks, sizeof(int));
+
+            fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "no of incoming chunks: %d\n", incomingChunks);
+            fclose(fplog);
+            
+            readDataNetwork(sockfd, completeTT, completeTTSize);
+
+
+            for (int i=nChunks;i<incomingChunks;i++)
+            {
+                allocChainMemoryChunk();
+            }
+
+            for (int i=0;i<incomingChunks;i++)
+            {
+                readDataNetwork(sockfd, chainMemoryChunks[i], chainMemorySize);
+            }
+            unlockCompleteTT();
+
+            auto t_end = std::chrono::high_resolution_clock::now();
+            double transferTime = std::chrono::duration<double>(t_end-t_start).count();
+
+            fplog = fopen(myUID, "ab+");
+            fprintf(fplog, "Complete TT recieve complete, time taken: %g seconds observed network bandwidth: %g MBps\n", 
+                            transferTime, (completeTTSize + nChunks * chainMemorySize)/(1024*1024*transferTime));
+            fclose(fplog);
+
+            close(sockfd);
+        }
+    }
+#endif

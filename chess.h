@@ -510,7 +510,8 @@ struct CompleteHashEntry
 {
     HashKey128b hash;    
     uint64 perft;
-    uint64 next;
+    uint32 nextTT;
+    uint32 nextIndex;
 };
 CT_ASSERT(sizeof(CompleteHashEntry) == 32);
 

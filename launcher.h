@@ -76,11 +76,12 @@ const uint32 ttBits[] = {0,       24,    25,     27,     28,     28,      0,    
 const bool   sysmem[] = {true, false, false,  false,   false,  true,   true,   true,   true,   true,   true,   true,   true,   true,   true,   true};
 const int  sharedHashBits = 25;
 
-// 128 million entries for the main hash table part
-#define COMPLETE_TT_BITS 28
+// 1 billion entries for the main hash table part
+#define COMPLETE_TT_BITS 30
+//#define COMPLETE_TT_BITS 27
 
-// 1 billion entries (for chained part)
-#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 1024*1024*1024
+// 128 million entries (for each chunk of chained part)
+#define COMPLETE_HASH_CHAIN_ALLOC_SIZE 128*1024*1024
 
 #elif 0
 // settings for 8 GB card (GTX 1080) + just 4 GB sysmem
@@ -133,9 +134,9 @@ std::mutex timerCS;
 
 CompleteHashEntry *completeTT = NULL;
 CompleteHashEntry *chainMemory = NULL;
-uint64 chainIndex = 0;
-uint64 completeTTSize = 0;
-uint64 chainMemorySize = 0;
+volatile uint64 chainIndex = 0;
+volatile uint64 completeTTSize = 0;
+volatile uint64 chainMemorySize = 0;
 
 int numGPUs = 0;
 
@@ -244,6 +245,22 @@ void allocAndClearMem(void **devPointer, void **hostPointer, size_t size, bool s
     }
 }
 
+CompleteHashEntry *chainMemoryChunks[1024];
+volatile int nChunks = 0;
+void allocChainMemoryChunk()
+{
+    chainMemorySize = COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry);
+    chainMemory = (CompleteHashEntry *)malloc(chainMemorySize);
+    if (!chainMemory)
+    {
+            printf("\nFailed allocating chainMemory chunk %d!\n", nChunks);
+            exit(0);
+    }
+    memset(chainMemory, 0, chainMemorySize);
+    chainMemoryChunks[nChunks++] = chainMemory;
+    chainIndex = 0;    
+}
+
 void allocCompleteTT()
 {
 #if USE_COMPLETE_TT_AT_LAST_CPU_LEVEL == 1
@@ -251,11 +268,15 @@ void allocCompleteTT()
     {
         completeTTSize = GET_TT_SIZE_FROM_BITS(COMPLETE_TT_BITS) * sizeof(CompleteHashEntry);
         completeTT = (CompleteHashEntry *)malloc(completeTTSize);
+        if (!completeTT)
+        {
+                printf("\nFailed allocating completeTT!\n");
+                exit(0);
+        }
         memset(completeTT, 0, completeTTSize);
 
-        chainMemorySize = COMPLETE_HASH_CHAIN_ALLOC_SIZE * sizeof(CompleteHashEntry);
-        chainMemory = (CompleteHashEntry *)malloc(chainMemorySize);
-        memset(chainMemory, 0, chainMemorySize);
+        memset(chainMemoryChunks, 0, sizeof(chainMemoryChunks));
+        allocChainMemoryChunk();
     }
 #endif
 }
@@ -265,8 +286,8 @@ void freeCompleteTT()
     if (completeTT)
         free(completeTT);
 
-    if (chainMemory)
-        free(chainMemory);
+    for (int i=0;i<nChunks;i++)
+        free(chainMemoryChunks[i]);
 }
 
 void setupHashTables128b(TTInfo128b &tt)
@@ -598,7 +619,8 @@ uint64 completeTTProbe(HashKey128b hash, int depth, CompleteHashEntry **pEntryPt
             // with this approach there is a (very!) small chance that duplicate entries might get added for the same position.
             //  ... but it should always be correct.
             entry->hash = HashKey128b(ALLSET,ALLSET);
-            entry->next = ALLSET;
+            entry->nextIndex = ~0;
+            entry->nextTT = ~0;
 
             *pEntryPtr = entry;
 
@@ -619,16 +641,17 @@ uint64 completeTTProbe(HashKey128b hash, int depth, CompleteHashEntry **pEntryPt
             break;
         }
 
-        if (entry->next == ALLSET)
+        if (entry->nextIndex == ~0)
         {
-            entry->next = chainIndex++;
+            chainIndex++;
             if (chainIndex > COMPLETE_HASH_CHAIN_ALLOC_SIZE)
             {
-                printf("\nRan out of complete hash table!\n");
-                exit(0);
+                allocChainMemoryChunk();
             }
+            entry->nextIndex = chainIndex;
+            entry->nextTT = (nChunks - 1);
         }
-        entry = &chainMemory[entry->next];
+        entry = &(chainMemoryChunks[entry->nextTT][entry->nextIndex]);
     }
     criticalSection.unlock();
 
@@ -642,12 +665,14 @@ void completeTTStore(CompleteHashEntry *entryPtr, HashKey128b hash, int depth, u
 {
     hash ^= (ZOB_KEY_128(depth) * depth);
 
-    // XOR trick to prevent random bit flip errors    
+    // XOR trick to prevent random bit flip errors (and also half read network entries)
     hash.highPart ^= perft;
     hash.lowPart  ^= perft;    
 
+    criticalSection.lock(); // Ankan - remove this likely not needed (very low probablity)
     entryPtr->hash = hash;
     entryPtr->perft = perft;
+    criticalSection.unlock();
 
 #if MULTI_NODE_NETWORK_MODE == 1
     enqueueWorkItem(entryPtr);
@@ -660,7 +685,7 @@ void completeTTUpdateFromNetwork(HashKey128b hash, uint64 perft)
 
     HashKey128b actualHash = hash;
     actualHash.highPart ^= perft;
-    actualHash.lowPart  ^= perft;    
+    actualHash.lowPart  ^= perft;
 
     completeTTProbe(actualHash, 0, &pEntry, true);
     if (pEntry)
@@ -771,6 +796,170 @@ uint32 maxMemoryUsage = 0;
 
 int numRegularLaunches = 0;
 int numRetryLaunches = 0;
+
+// launch last two levels
+// attemps to overlap CPU and GPU time
+// - cpu time to check hash table
+// - gpu time for perft calculation
+#if 0
+uint64 perft_bb_second_last_level_launcher(HexaBitBoardPosition *pos, uint32 depth)
+{
+    HashKey128b hash = MoveGeneratorBitboard::computeZobristKey128b(pos);
+
+    // first level children
+    CMove firstLevelMoves[MAX_MOVES];
+    uint64 firstLevelPerfts[MAX_MOVES];
+    int firstLevelNewBoards = 0;
+    CompleteHashEntry *firstLevelHashEntries[MAX_MOVES];
+
+    uint8 color = pos->chance;
+    int nMoves = generateMoves(pos, color, firstLevelMoves);
+    sortMoves(moves, nMoves);
+
+    uint64 perft = 0;
+
+    for(j=0;j<nMoves;j++)
+    {
+        HexaBitBoardPosition curPos = *pos;
+        HashKey128b curHash = makeMoveAndUpdateHash(&curPos, hash, firstLevelMoves[j], color);
+
+        // check in hash table
+        CompleteHashEntry *entryPtr;
+
+        uint64 ttVal = completeTTProbe(newHash, depth+1, &entryPtr);
+        if (entryPtr == NULL)
+        {
+            perft += ttVal;
+            continue;
+        }
+        firstLevelHashEntries[firstLevelNewBoards++] = entryPtr;
+        
+        uint64 count = 0;
+
+        // second level moves and boards
+        HexaBitBoardPosition childBoards[MAX_MOVES];
+        CMove                moves[MAX_MOVES];
+        HashKey128b          hashes[MAX_MOVES];
+        uint64               perfts[MAX_MOVES];
+
+        uint8 color = pos->chance;
+        int nChildMoves = generateMoves(curPos, color, moves);
+        sortMoves(moves, nChildMoves);
+
+        int nNewBoards = 0;
+        CompleteHashEntry *newEntryPointer[MAX_MOVES];        
+
+        for (int i = 0; i < nMoves; i++)
+        {
+            childBoards[nNewBoards] = *curPos;
+            HashKey128b newHash = makeMoveAndUpdateHash(&childBoards[nNewBoards], curHash, moves[i], color);
+
+            CompleteHashEntry *entryPtr;
+            uint64 ttVal = completeTTProbe(newHash, depth + 2, &entryPtr);
+            if (entryPtr == NULL)
+            {
+                count += ttVal;
+                continue;
+            }
+            newEntryPointer[nNewBoards] = entryPtr;
+            hashes[nNewBoards] = newHash;
+            nNewBoards++;
+        }
+           
+        numRegularLaunches += nNewBoards;
+
+
+#if MEASURE_GPU_ACTIVE_TIME == 1
+        START_TIMER
+#endif
+
+        // copy host->device in one go
+        cudaMemcpy(gpuBoard[activeGpu], childBoards, sizeof(HexaBitBoardPosition)*nNewBoards, cudaMemcpyHostToDevice);
+        cudaMemset(gpu_perft[activeGpu], 0, sizeof(uint64)*nNewBoards);
+        cudaMemcpy(gpuHashes[activeGpu], hashes, sizeof(HashKey128b)*nNewBoards, cudaMemcpyHostToDevice);
+
+        int batchSize = nNewBoards;
+        memset(perfts, 0xFF, sizeof(uint64)*nNewBoards);
+        while(1)
+        {
+            bool done = true;
+
+            for (int i = 0; i < nNewBoards;)
+            {
+                if (perfts[i] == ALLSET)
+                {
+                    int count = ((nNewBoards - i) > batchSize) ? batchSize : nNewBoards - i;
+
+                    // skip the ones already computed
+                    while (perfts[i + count - 1] != ALLSET) count--;
+
+                    if (batchSize != nNewBoards)
+                        numRetryLaunches++;
+
+                    perft_bb_gpu_simple_hash << <1, 1 >> > (count, &gpuBoard[activeGpu][i], &gpuHashes[activeGpu][i], &gpu_perft[activeGpu][i], depth - 1, preAllocatedBufferHost[activeGpu],
+                                                            TransTables128b[activeGpu], true);
+
+                    cudaError_t err = cudaMemcpy(&perfts[i], &gpu_perft[activeGpu][i], sizeof(uint64) * count, cudaMemcpyDeviceToHost);
+
+                    if (perfts[i] == ALLSET)
+                    {
+                        done = false;
+                        for (int j = 0; j < count; j++)
+                            perfts[i + j] = ALLSET;
+
+                        cudaMemset(&gpu_perft[activeGpu][i], 0, sizeof(uint64) * count);
+                    }
+                    i += count;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+            if (done)
+                break;
+
+            // some bug here??!!!
+            if (batchSize == 1)
+            {
+                printf("\nCan't even fit a single launch! Exiting\n");
+                exit(0);
+            }
+            batchSize = (batchSize + 3) / 4;
+        }
+
+        // update memory usage estimation
+        uint32 currentMemUsage = 0;
+        cudaError_t s = cudaMemcpyFromSymbol(&currentMemUsage, maxMemoryUsed, sizeof(int), 0, cudaMemcpyDeviceToHost);
+        if (currentMemUsage > maxMemoryUsage)
+        {
+            maxMemoryUsage = currentMemUsage;
+        }
+
+
+        // collect perft results and update hash table
+        for (int i = 0; i < nNewBoards; i++)
+        {
+            if (perfts[i] == ALLSET)
+            {
+                printf("\nUnexpected ERROR? Exiting!!\n");
+                exit(0);
+            }
+
+            count += perfts[i];
+
+            HashKey128b posHash128b = hashes[i];
+
+                completeTTStore(newEntryPointer[i], hashes[i], depth+2, perfts[i]);
+        }
+
+        return count;
+        
+                
+        
+    }
+}
+#endif
 
 // launch all boards of the last level without waiting for previous work to finish
 // tiny bit improvement in GPU utilization

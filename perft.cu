@@ -129,9 +129,11 @@ int main(int argc, char *argv[])
         launchDepth = maxDepth;
     }
 
+    fflush(stdout);
     for (int depth = minDepth; depth <= maxDepth; depth++)
     {
         perftLauncher(&testBB, depth, launchDepth);
+        fflush(stdout);        
     }
 
 #if MULTI_NODE_NETWORK_MODE == 1
