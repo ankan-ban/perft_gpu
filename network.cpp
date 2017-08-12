@@ -236,12 +236,13 @@ int readDataNetwork(int sockfd, void *data, uint64 size)
         n = read(sockfd, buf, chunk);
         if (n <= 0)
         {
+            const char *err = (n == 0) ? "Read ZERO bytes" : strerror(errno);
             FILE *fplog = fopen(myUID, "ab+");
-            fprintf(fplog, "Error reading from network: %s\n", strerror(errno));        
+            fprintf(fplog, "Error reading from network: %s\n", err);        
             fclose(fplog);
             printf("Error reading from network: %s\n", strerror(errno));
             fflush(stdout);
-            return -1;
+            return (n == 0) ? -2 : -1;
         }        
         buf +=n;
         remaining -= n;
@@ -338,23 +339,27 @@ void broadcaster_thread_body()
                         close(sockfd);
                         continue;
                     }
-                    
+                    bool caughtError = false;
                     for (int item = firstItem; item != lastItem; item = (item +1) % MAX_QUEUE_LENGTH)
                     {
                         n = write(sockfd, &WorkQueue[item], sizeof(NetworkWorkItem));
                         if (n<=0)
                         {
-                            printf("\nerror writing work items when broadcasting work items\n");
+                            printf("\nerror writing work items when broadcasting work items, node: %s, error: %s\n", nodeIPs[i], strerror(errno));
                             fflush(stdout);
                             //exit(0);
                             close(sockfd);
-                            continue;
+                            caughtError = true;
+                            break;
                         }
                     }
+                    if (caughtError)
+                        continue;
+
                     n = write(sockfd, &WorkQueue[lastItem], sizeof(NetworkWorkItem));       
                     if (n<=0)
                     {
-                        printf("\nerror writing last work item when broadcasting work items\n");
+                        printf("\nerror writing last work item when broadcasting work items, node: %s, error: %s\n", nodeIPs[i], strerror(errno));
                         fflush(stdout);
                         //exit(0);
                         close(sockfd);
@@ -561,14 +566,21 @@ void completeTTServer()
             close(connfd);
             continue;
         }
+        bool gotError = false;
         for (int i=0;i<nChunks;i++)
         {
             n = writeDataNetwork(connfd, chainMemoryChunks[i], chainMemorySize);
-            unlockCompleteTT();
-            sendingCompleteTT = false;
-            close(connfd);
-            continue;
+            if (n < 0)
+            {
+                unlockCompleteTT();
+                sendingCompleteTT = false;
+                close(connfd);
+                gotError = true;
+                break;
+            }
         }
+        if (gotError)
+            continue;
 
         auto t_end = std::chrono::high_resolution_clock::now();
         double transferTime = std::chrono::duration<double>(t_end-t_start).count();
@@ -691,8 +703,21 @@ void network_thread_body()
     networkThreadKillRequest = false;
 }
 
+#include <signal.h>
+/* Catch Signal Handler functio */
+void signal_callback_handler(int signum)
+{
+
+    printf("Caught signal: %d\n", signum);
+}
+
+
 void createNetworkThread()
 {
+    signal(SIGPIPE, signal_callback_handler);
+    signal(SIGHUP,  signal_callback_handler);
+
+
     numNodes = 0;
     updateNodesList();
 
@@ -795,6 +820,14 @@ void createNetworkThread()
             for (int i=0;i<incomingChunks;i++)
             {
                 n = readDataNetwork(sockfd, chainMemoryChunks[i], chainMemorySize);
+                if (n == -2)
+                {
+                    // HACK! server not willing to give any more chunks. Stop anyway :-/
+                    incomingChunks = i;
+                    incomingChainIndex = 0;
+                    printf("\nServer didn't give me all chunks :-/\n");
+                    break;
+                }
                 if (n < 0)
                 {
                     exit(0);
