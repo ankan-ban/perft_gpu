@@ -88,12 +88,12 @@ void Utils::readBoardFromFile(char filename[], BoardPosition *pos)
     boardCharTo088(pos, board);
 }
 
-// convert 088 board to hex bit board
-void Utils::board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088)
+// convert 088 board to quad bit board
+void Utils::board088ToQuadBB(QuadBitBoard *qbb, GameState *gs, BoardPosition *pos088)
 {
-    memset(posBB, 0, sizeof(HexaBitBoardPosition));
+    memset(qbb, 0, sizeof(QuadBitBoard));
 
-    for (uint8 i=0;i<64;i++)
+    for (uint8 i = 0; i < 64; i++)
     {
         uint8 rank = i >> 3;
         uint8 file = i & 7;
@@ -103,40 +103,19 @@ void Utils::board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088)
         {
             uint8 color = COLOR(colorpiece);
             uint8 piece = PIECE(colorpiece);
-            if (color == WHITE)
-            {
-                posBB->whitePieces |= BIT(i);
-            }
-            switch (piece)
-            {
-                case PAWN:
-                    posBB->pawns |= BIT(i);
-                    break;
-                case KNIGHT:
-                    posBB->knights |= BIT(i);
-                    break;
-                case BISHOP:
-                    posBB->bishopQueens |= BIT(i);
-                    break;
-                case ROOK:
-                    posBB->rookQueens |= BIT(i);
-                    break;
-                case QUEEN:
-                    posBB->bishopQueens |= BIT(i);
-                    posBB->rookQueens |= BIT(i);
-                    break;
-                case KING:
-                    posBB->kings |= BIT(i);
-                    break;
-            }
+            // quad encoding: bb[0] = color (1 for black), bb[1..3] = piece type bits
+            if (color == BLACK) qbb->bb[0] |= BIT(i);
+            if (piece & 1) qbb->bb[1] |= BIT(i);
+            if (piece & 2) qbb->bb[2] |= BIT(i);
+            if (piece & 4) qbb->bb[3] |= BIT(i);
         }
     }
 
-    posBB->chance = pos088->chance;
-    posBB->blackCastle = pos088->blackCastle;
-    posBB->whiteCastle = pos088->whiteCastle;
-    posBB->enPassent = pos088->enPassent;
-    posBB->halfMoveCounter = pos088->halfMoveCounter;
+    gs->chance = pos088->chance;
+    gs->blackCastle = pos088->blackCastle;
+    gs->whiteCastle = pos088->whiteCastle;
+    gs->enPassent = pos088->enPassent;
+    gs->halfMoveCounter = pos088->halfMoveCounter;
 }
 
 
@@ -186,7 +165,7 @@ A FEN record contains 6 fields. The separator between fields is a space. The fie
    6. Fullmove number: The number of the full move. It starts at 1, and is incremented after Black's move.
 
 */
-void Utils::readFENString(char fen[], BoardPosition *pos) 
+void Utils::readFENString(const char fen[], BoardPosition *pos)
 {
 	int i, j;
 	char curChar;

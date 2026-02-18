@@ -111,64 +111,35 @@ public:
     }
 
 
-    // convert bitboard to 088 board
-    CUDA_CALLABLE_MEMBER static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB)
+    // convert quad bitboard to 088 board
+    CUDA_CALLABLE_MEMBER static void boardQuadBBTo088(BoardPosition *pos088, QuadBitBoard *qbb, GameState *gs)
     {
         memset(pos088, 0, sizeof(BoardPosition));
 
-
-        uint64 queens = posBB->bishopQueens & posBB->rookQueens;
-
-#define RANKS2TO7 0x00FFFFFFFFFFFF00ull
-        uint64 pawns = posBB->pawns & RANKS2TO7;
-
-        uint64 allPieces = posBB->kings | posBB->knights | pawns | posBB->rookQueens | posBB->bishopQueens;
-
-        for (uint8 i = 0; i<64; i++)
+        for (uint8 i = 0; i < 64; i++)
         {
             uint8 rank = i >> 3;
             uint8 file = i & 7;
             uint8 index088 = INDEX088(rank, file);
 
-            if (allPieces & BIT(i))
-            {
-                uint8 color = (posBB->whitePieces & BIT(i)) ? WHITE : BLACK;
-                uint8 piece = 0;
-                if (posBB->kings & BIT(i))
-                {
-                    piece = KING;
-                }
-                else if (posBB->knights & BIT(i))
-                {
-                    piece = KNIGHT;
-                }
-                else if (pawns & BIT(i))
-                {
-                    piece = PAWN;
-                }
-                else if (queens & BIT(i))
-                {
-                    piece = QUEEN;
-                }
-                else if (posBB->bishopQueens & BIT(i))
-                {
-                    piece = BISHOP;
-                }
-                else if (posBB->rookQueens & BIT(i))
-                {
-                    piece = ROOK;
-                }
-                assert(piece);
+            // extract piece type from quad encoding
+            uint8 piece = 0;
+            if (qbb->bb[1] & BIT(i)) piece |= 1;
+            if (qbb->bb[2] & BIT(i)) piece |= 2;
+            if (qbb->bb[3] & BIT(i)) piece |= 4;
 
+            if (piece)
+            {
+                uint8 color = (qbb->bb[0] & BIT(i)) ? BLACK : WHITE;
                 pos088->board[index088] = COLOR_PIECE(color, piece);
             }
         }
 
-        pos088->chance = posBB->chance;
-        pos088->blackCastle = posBB->blackCastle;
-        pos088->whiteCastle = posBB->whiteCastle;
-        pos088->enPassent = posBB->enPassent;
-        pos088->halfMoveCounter = posBB->halfMoveCounter;
+        pos088->chance = gs->chance;
+        pos088->blackCastle = gs->blackCastle;
+        pos088->whiteCastle = gs->whiteCastle;
+        pos088->enPassent = gs->enPassent;
+        pos088->halfMoveCounter = gs->halfMoveCounter;
     }
 
 
@@ -211,10 +182,10 @@ public:
     }
 
 
-    CUDA_CALLABLE_MEMBER static void displayBoard(HexaBitBoardPosition *pos)
+    CUDA_CALLABLE_MEMBER static void displayBoard(QuadBitBoard *pos, GameState *gs)
     {
         BoardPosition p;
-        boardHexBBTo088(&p, pos);
+        boardQuadBBTo088(&p, pos, gs);
         dispBoard(&p);
     }
 
@@ -280,11 +251,10 @@ public:
     //static void board088ToChar(char board[8][8], BoardPosition *pos);
     static void boardCharTo088(BoardPosition *pos, char board[8][8]);
 
-    static void board088ToHexBB(HexaBitBoardPosition *posBB, BoardPosition *pos088);
-    //static void boardHexBBTo088(BoardPosition *pos088, HexaBitBoardPosition *posBB);
+    static void board088ToQuadBB(QuadBitBoard *qbb, GameState *gs, BoardPosition *pos088);
 
     // reads a FEN string and sets board and other Game Data accorodingly
-    static void readFENString(char fen[], BoardPosition *pos);
+    static void readFENString(const char fen[], BoardPosition *pos);
 
     // clears the board (i.e, makes all squares blank)
     static void clearBoard(BoardPosition *pos);

@@ -29,13 +29,6 @@ uint64 BishopAttacksMasked [64];
 uint64 rookMagicAttackTables      [64][1 << ROOK_MAGIC_BITS  ];    // 2 MB
 uint64 bishopMagicAttackTables    [64][1 << BISHOP_MAGIC_BITS];    // 256 KB
 
-// set of random numbers for zobrist hashing
-ZobristRandoms zob;
-
-// another set used for 128-bit hashes
-ZobristRandoms zob2;
-
-
 // Fixed shift fancy magics
 // taken from http://www.open-aurec.com/wbforum/viewtopic.php?f=4&t=51162
 
